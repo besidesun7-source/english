@@ -290,7 +290,7 @@ async function addFiles(files){
   save(); renderSources(); renderDocs();
 }
 $('#fileInput').onchange=e=>addFiles(e.target.files); $('#uploadZone').ondragover=e=>{e.preventDefault();$('#uploadZone').classList.add('drag')};$('#uploadZone').ondragleave=()=>$('#uploadZone').classList.remove('drag');$('#uploadZone').ondrop=e=>{e.preventDefault();$('#uploadZone').classList.remove('drag');addFiles(e.dataTransfer.files)};
-$('.mobile-menu').onclick=()=>$('.sidebar').classList.toggle('open');
+$('.mobile-menu').onclick=e=>{ e.stopPropagation(); $('.sidebar').classList.toggle('open'); };
 document.querySelector('main').onclick=()=>$('.sidebar').classList.remove('open');
 refreshLessons();renderDocs();
 $('#syncForm').onsubmit=async e=>{ e.preventDefault(); const password=$('#syncPassword').value; if(!password)return; const button=$('#syncForm button'); button.disabled=true; button.textContent='암호화 보관함 여는 중…'; try { await createVault(password); await restoreLibrary(); updateSyncUi(); hide('#syncModal'); } catch { $('#syncPassword').value=''; $('#syncPassword').placeholder='비밀번호가 맞지 않거나 연결할 수 없어요'; } finally { button.disabled=false; button.textContent='암호화 보관함 연결'; } };
