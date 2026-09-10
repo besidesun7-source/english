@@ -245,20 +245,16 @@ async function analyzeDocument(text, name, documentId) {
 }
 let analysisJobs=0, analysisStartedAt=0, analysisTicker;
 function setAnalysisStatus(name, active){
-  analysisJobs=Math.max(0,analysisJobs+(active?1:-1)); const notice=$('#analysisNotice');
-  notice.hidden=analysisJobs===0;
-  if(active && !analysisStartedAt){ analysisStartedAt=Date.now(); analysisTicker=setInterval(()=>{const seconds=Math.floor((Date.now()-analysisStartedAt)/1000); $('#analysisDetail').textContent=seconds<25?'영어 표현, 자연스러운 뜻, 예문과 설명을 정리하는 중이에요.':`문서 전체를 꼼꼼히 읽고 있어요 · ${seconds}초 경과`;},1000); }
-  if(active){ $('#analysisTitle').textContent=`GPT가 “${name}”을 분석하고 있어요`; }
+  analysisJobs=Math.max(0,analysisJobs+(active?1:-1));
   if(!analysisJobs){ clearInterval(analysisTicker); analysisStartedAt=0; }
 }
-function clearAnalysisStatus(){ analysisJobs=0; clearInterval(analysisTicker); analysisStartedAt=0; $('#analysisNotice').hidden=true; }
+function clearAnalysisStatus(){ analysisJobs=0; clearInterval(analysisTicker); analysisStartedAt=0; }
 window.cancelAnalysis=id=>{
   const doc=docs.find(item=>item.id===id); if(!doc)return;
   cancelledAnalyses.add(id); analysisControllers.get(id)?.abort();
   docs=docs.filter(item=>item.id!==id); lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id);
   setAnalysisStatus(doc.name,false); save(); refreshLessons(); renderDocs();
 };
-$('#cancelAllAnalyses').onclick=()=>{ docs.filter(doc=>doc.analyzing).forEach(doc=>window.cancelAnalysis(doc.id)); clearAnalysisStatus(); };
 async function addFiles(files){
   for (const f of files) {
     if (!/\.(pdf|docx)$/i.test(f.name)) continue;
