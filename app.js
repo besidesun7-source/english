@@ -12,7 +12,7 @@ let lessons = [
 const readSaved = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; } };
 let lessonBank = readSaved('lingo-lesson-bank', lessons.map(lesson => ({ ...lesson, documentId: 'hong' })));
 let docs = readSaved('lingo-docs', seedDocuments);
-let playing = false, current = 0, auto = true, timer, ttsAudio;
+let playing = false, current = 0, auto = true, timer, ttsAudio, playbackId = 0;
 let playQueue = [], queueIndex = 0, sessionEndsAt = 0, audioPattern = 0;
 const SESSION_MINUTES = 30;
 const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
@@ -28,7 +28,11 @@ window.toggleDoc=id=>{ const d=docs.find(x=>x.id===id); d.enabled=!d.enabled; sa
 function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); }
 $$('.nav-item').forEach(n=>n.onclick=()=>page(n.dataset.page));
 function show(id){ $(id).classList.add('show'); } function hide(id){ $(id).classList.remove('show'); }
-$$('.close').forEach(b=>b.onclick=()=>b.closest('.modal').classList.remove('show'));
+function closeModal(modal){
+  if (modal.id === 'playerModal') { stopSpeech(); playing=false; sessionEndsAt=0; $('#togglePlay').textContent='▶'; }
+  modal.classList.remove('show');
+}
+$$('.close').forEach(b=>b.onclick=()=>closeModal(b.closest('.modal')));
 $('#openScope').onclick=()=>{renderScope();show('#scopeModal')}; $('#saveScope').onclick=()=>{ $$('#scopeOptions input').forEach(x=>docs.find(d=>d.id===x.dataset.id).enabled=x.checked); save(); refreshLessons(); renderDocs();hide('#scopeModal'); };
 function updatePlayer(){ const l=activeLesson(); if(!l)return; const position=playQueue.length ? queueIndex+1 : current+1; const total=playQueue.length || lessons.length; $('#playerTitle').textContent=l.title;$('#playerMeaning').textContent=l.meaning;$('#playerSentence').textContent=l.sentence;$('.now-playing span').textContent=String(position).padStart(2,'0'); $('#progressFill').style.width=`${(position/total)*100}%`; const info=$('#sessionInfo'); if(info) info.textContent=sessionEndsAt ? `새로운 조합으로 30분 듣는 중 · ${Math.max(0, Math.ceil((sessionEndsAt-Date.now())/60000))}분 남음` : '표현을 눌러 미리 듣는 중'; }
 function startListening(){ if(!lessons.length)return; playQueue=shuffle(lessons); queueIndex=0; audioPattern=Math.floor(Math.random()*3); sessionEndsAt=Date.now()+SESSION_MINUTES*60*1000; updatePlayer(); show('#playerModal'); speak(); }
@@ -57,8 +61,10 @@ function browserLessonAudio(lesson, done){
 async function speak(){
   const lesson = activeLesson();
   if(!lesson) return;
+  const run = ++playbackId;
   speechSynthesis.cancel(); playing=true; $('#togglePlay').textContent='❚❚';
   const moveNext=()=>{
+    if (run !== playbackId || !playing) return;
     if(sessionEndsAt && Date.now() >= sessionEndsAt){ playing=false; sessionEndsAt=0; $('#togglePlay').textContent='▶'; const info=$('#sessionInfo'); if(info) info.textContent='30분 듣기를 마쳤어요. 다시 시작하면 새 조합으로 들려드려요.'; return; }
     if(auto){
       if(playQueue.length){ queueIndex=(queueIndex+1)%playQueue.length; if(queueIndex===0){ playQueue=shuffle(lessons); audioPattern=Math.floor(Math.random()*3); } }
@@ -74,7 +80,7 @@ async function speak(){
     browserLessonAudio(lesson,moveNext);
   }
 }
-function stopSpeech(){speechSynthesis.cancel();if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}}
+function stopSpeech(){playbackId++;speechSynthesis.cancel();if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}}
 function movePlayer(step){ stopSpeech(); if(playQueue.length) queueIndex=(queueIndex+step+playQueue.length)%playQueue.length; else current=(current+step+lessons.length)%lessons.length; updatePlayer(); if(playing)speak(); }
 $('#togglePlay').onclick=()=>{if(playing){stopSpeech();playing=false;$('#togglePlay').textContent='▶'}else speak()}; $('#next').onclick=()=>movePlayer(1);$('#prev').onclick=()=>movePlayer(-1);$('#autoToggle').onclick=e=>{auto=!auto;e.currentTarget.classList.toggle('on',auto)};
 $('#intensiveToggle').onclick=e=>{intensiveListening=!intensiveListening;e.currentTarget.classList.toggle('on',intensiveListening);$('#intensiveLabel').textContent=intensiveListening?'강화 듣기 · 설명 포함':'일반 듣기 · 뜻과 예문'};
