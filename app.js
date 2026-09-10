@@ -9,12 +9,17 @@ let lessons = [
   { n: '04', title: 'Something came up', meaning: '갑자기 일이 생겼어', sentence: 'Something came up, so I can’t go today.', translation: '갑자기 일이 생겨서 오늘 갈 수 없어.', explanation: '구체적으로 설명하기 곤란한 예상 밖의 일이 생겼을 때 쓰는 자연스러운 표현이에요. 핑계가 아니라 상황을 부드럽게 전달하는 느낌입니다.', tag: '표현' },
   { n: '05', title: 'At the last minute', meaning: '막판에 / 마지막 순간에', sentence: 'Something came up at the last minute.', translation: '막판에 갑자기 일이 생겼다.', explanation: '정말 시간이 거의 남지 않은 마지막 순간을 강조할 때 써요. 계획이 막판에 바뀌었을 때 자주 쓰입니다.', tag: '표현' }
 ];
-let lessonBank = lessons.map(lesson => ({ ...lesson, documentId: 'hong' }));
-let docs = JSON.parse(localStorage.getItem('lingo-docs')) || seedDocuments;
+const readSaved = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; } };
+let lessonBank = readSaved('lingo-lesson-bank', lessons.map(lesson => ({ ...lesson, documentId: 'hong' })));
+let docs = readSaved('lingo-docs', seedDocuments);
 let playing = false, current = 0, auto = true, timer, ttsAudio;
+let playQueue = [], queueIndex = 0, sessionEndsAt = 0, audioPattern = 0;
+const SESSION_MINUTES = 30;
 const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
-function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); }
-function refreshLessons(){ if(playing){ stopSpeech(); playing=false; $('#togglePlay').textContent='▶'; } const enabled = new Set(docs.filter(d=>d.enabled).map(d=>d.id)); lessons = lessonBank.filter(lesson => enabled.has(lesson.documentId)); current = 0; renderSources(); renderLessons(); }
+function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); localStorage.setItem('lingo-lesson-bank', JSON.stringify(lessonBank)); }
+function activeLesson(){ return playQueue.length ? playQueue[queueIndex] : lessons[current]; }
+function shuffle(items){ const copy=[...items]; for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];} return copy; }
+function refreshLessons(){ if(playing){ stopSpeech(); playing=false; $('#togglePlay').textContent='▶'; } playQueue=[]; sessionEndsAt=0; const enabled = new Set(docs.filter(d=>d.enabled).map(d=>d.id)); lessons = lessonBank.filter(lesson => enabled.has(lesson.documentId)); current = 0; renderSources(); renderLessons(); }
 function renderSources(){ $('#sourceChips').innerHTML = docs.filter(d=>d.enabled).map(d=>`<span class="source-chip"><i style="background:${d.color}"></i>${d.name}<button onclick="toggleDoc('${d.id}')">×</button></span>`).join('') || '<span class="muted">문서를 선택해주세요</span>'; $('#lessonCount').textContent = lessons.length; }
 function renderLessons(){ $('#lessonCards').innerHTML = lessons.length ? lessons.map((l,i)=>`<button class="lesson-card" onclick="openPlayer(${i})"><span class="lesson-num">${l.n}</span><div><span class="tag">${l.tag}</span><b>${l.title}</b><small>${l.meaning}</small></div><span class="speak">◖</span></button>`).join('') : '<p class="empty-lessons">선택한 문서에서 아직 학습할 표현을 찾지 못했어요.</p>'; }
 function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small>${d.date} · 핵심 표현 ${d.count}개</small></div><button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button><button class="dots">•••</button></div>`).join(''); }
@@ -25,32 +30,53 @@ $$('.nav-item').forEach(n=>n.onclick=()=>page(n.dataset.page));
 function show(id){ $(id).classList.add('show'); } function hide(id){ $(id).classList.remove('show'); }
 $$('.close').forEach(b=>b.onclick=()=>b.closest('.modal').classList.remove('show'));
 $('#openScope').onclick=()=>{renderScope();show('#scopeModal')}; $('#saveScope').onclick=()=>{ $$('#scopeOptions input').forEach(x=>docs.find(d=>d.id===x.dataset.id).enabled=x.checked); save(); refreshLessons(); renderDocs();hide('#scopeModal'); };
-function updatePlayer(){ let l=lessons[current]; if(!l)return; $('#playerTitle').textContent=l.title;$('#playerMeaning').textContent=l.meaning;$('#playerSentence').textContent=l.sentence;$('.now-playing span').textContent=String(current+1).padStart(2,'0'); $('#progressFill').style.width=`${((current+1)/lessons.length)*100}%`; }
-window.openPlayer=i=>{if(!lessons.length)return;current=i;updatePlayer();show('#playerModal');}; $('.start-listen').onclick=()=>openPlayer(0); $$('.mode-card').forEach(x=>x.onclick=()=>x.dataset.mode==='listen'?openPlayer(0):openChat());
+function updatePlayer(){ const l=activeLesson(); if(!l)return; const position=playQueue.length ? queueIndex+1 : current+1; const total=playQueue.length || lessons.length; $('#playerTitle').textContent=l.title;$('#playerMeaning').textContent=l.meaning;$('#playerSentence').textContent=l.sentence;$('.now-playing span').textContent=String(position).padStart(2,'0'); $('#progressFill').style.width=`${(position/total)*100}%`; const info=$('#sessionInfo'); if(info) info.textContent=sessionEndsAt ? `새로운 조합으로 30분 듣는 중 · ${Math.max(0, Math.ceil((sessionEndsAt-Date.now())/60000))}분 남음` : '표현을 눌러 미리 듣는 중'; }
+function startListening(){ if(!lessons.length)return; playQueue=shuffle(lessons); queueIndex=0; audioPattern=Math.floor(Math.random()*3); sessionEndsAt=Date.now()+SESSION_MINUTES*60*1000; updatePlayer(); show('#playerModal'); speak(); }
+window.openPlayer=i=>{if(!lessons.length)return;playQueue=[];sessionEndsAt=0;current=i;updatePlayer();show('#playerModal');}; $('.start-listen').onclick=startListening; $$('.mode-card').forEach(x=>x.onclick=()=>x.dataset.mode==='listen'?startListening():openChat());
 let intensiveListening = false;
 function lessonScript(lesson){
-  const base = `Today's expression. ${lesson.title}. The meaning is, ${lesson.meaning}. Listen to the example. ${lesson.sentence}. It means, ${lesson.translation || lesson.meaning}. One more time. ${lesson.sentence}.`;
+  const scripts = [
+    `Today's expression. ${lesson.title}. The meaning is, ${lesson.meaning}. Listen to the example. ${lesson.sentence}. It means, ${lesson.translation || lesson.meaning}. One more time. ${lesson.sentence}.`,
+    `Listen first. ${lesson.sentence}. In Korean, it means, ${lesson.translation || lesson.meaning}. The key expression is, ${lesson.title}. Repeat the whole sentence. ${lesson.sentence}.`,
+    `Let's practice a useful phrase. ${lesson.title}. ${lesson.meaning}. Say this in English. ${lesson.sentence}. Again, slowly. ${lesson.sentence}.`
+  ];
+  const base = scripts[audioPattern];
   return intensiveListening ? `${base} Here is why. ${lesson.explanation || 'Listen to how this expression is used in the sentence.'} Repeat after me. ${lesson.sentence}.` : base;
 }
 function browserLessonAudio(lesson, done){
-  const parts = [[lesson.title,'en-US'],[lesson.meaning,'ko-KR'],[lesson.sentence,'en-US'],[lesson.translation || lesson.meaning,'ko-KR']];
+  const patterns = [
+    [[lesson.title,'en-US'],[lesson.meaning,'ko-KR'],[lesson.sentence,'en-US'],[lesson.translation || lesson.meaning,'ko-KR']],
+    [[lesson.sentence,'en-US'],[lesson.translation || lesson.meaning,'ko-KR'],[lesson.title,'en-US']],
+    [[lesson.title,'en-US'],[lesson.meaning,'ko-KR'],[lesson.sentence,'en-US']]
+  ];
+  const parts = patterns[audioPattern].map(part => [...part]);
   if (intensiveListening) parts.push([lesson.explanation || '이 표현은 문맥에 맞게 자연스럽게 사용해보세요.','ko-KR']);
   parts.push([lesson.sentence,'en-US']); let index=0;
   const next=()=>{ if(index===parts.length)return done(); const [text,lang]=parts[index++]; const utterance=new SpeechSynthesisUtterance(text); utterance.lang=lang; utterance.rate=lang==='en-US'?.78:.9; utterance.onend=next; speechSynthesis.speak(utterance); }; next();
 }
 async function speak(){
+  const lesson = activeLesson();
+  if(!lesson) return;
   speechSynthesis.cancel(); playing=true; $('#togglePlay').textContent='❚❚';
-  const moveNext=()=>{if(auto){current=(current+1)%lessons.length;updatePlayer();speak()}else{playing=false;$('#togglePlay').textContent='▶'}};
+  const moveNext=()=>{
+    if(sessionEndsAt && Date.now() >= sessionEndsAt){ playing=false; sessionEndsAt=0; $('#togglePlay').textContent='▶'; const info=$('#sessionInfo'); if(info) info.textContent='30분 듣기를 마쳤어요. 다시 시작하면 새 조합으로 들려드려요.'; return; }
+    if(auto){
+      if(playQueue.length){ queueIndex=(queueIndex+1)%playQueue.length; if(queueIndex===0){ playQueue=shuffle(lessons); audioPattern=Math.floor(Math.random()*3); } }
+      else current=(current+1)%lessons.length;
+      updatePlayer(); speak();
+    }else{playing=false;$('#togglePlay').textContent='▶'}
+  };
   try{
-    const response=await fetch('/api/speech',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:lessonScript(lessons[current])})});
+    const response=await fetch('/api/speech',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:lessonScript(lesson)})});
     if(!response.ok)throw new Error('TTS unavailable');
     ttsAudio=new Audio(URL.createObjectURL(await response.blob())); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null;moveNext()}; ttsAudio.play();
   }catch{
-    browserLessonAudio(lessons[current],moveNext);
+    browserLessonAudio(lesson,moveNext);
   }
 }
 function stopSpeech(){speechSynthesis.cancel();if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}}
-$('#togglePlay').onclick=()=>{if(playing){stopSpeech();playing=false;$('#togglePlay').textContent='▶'}else speak()}; $('#next').onclick=()=>{stopSpeech();current=(current+1)%lessons.length;updatePlayer();if(playing)speak()};$('#prev').onclick=()=>{stopSpeech();current=(current+lessons.length-1)%lessons.length;updatePlayer();if(playing)speak()};$('#autoToggle').onclick=e=>{auto=!auto;e.currentTarget.classList.toggle('on',auto)};
+function movePlayer(step){ stopSpeech(); if(playQueue.length) queueIndex=(queueIndex+step+playQueue.length)%playQueue.length; else current=(current+step+lessons.length)%lessons.length; updatePlayer(); if(playing)speak(); }
+$('#togglePlay').onclick=()=>{if(playing){stopSpeech();playing=false;$('#togglePlay').textContent='▶'}else speak()}; $('#next').onclick=()=>movePlayer(1);$('#prev').onclick=()=>movePlayer(-1);$('#autoToggle').onclick=e=>{auto=!auto;e.currentTarget.classList.toggle('on',auto)};
 $('#intensiveToggle').onclick=e=>{intensiveListening=!intensiveListening;e.currentTarget.classList.toggle('on',intensiveListening);$('#intensiveLabel').textContent=intensiveListening?'강화 듣기 · 설명 포함':'일반 듣기 · 뜻과 예문'};
 let qIndex=0, liveConnection, liveStream, liveAudio; const questions=[{q:'“갑자기 일이 생겼어”를 영어로 말해볼까요?',a:'Something came up.'},{q:'“무엇을 먹을지는 네가 정해”를 영어로 어떻게 말할까요?',a:'It’s up to you what we eat.'},{q:'“아이들이 9시에 자러 간다”는요?',a:'My children go to bed at 9 p.m.'}];
 function addChat(text,who){$('#chatLog').insertAdjacentHTML('beforeend',`<div class="bubble ${who}">${text}</div>`);$('#chatLog').scrollTop=99999;}
@@ -72,15 +98,24 @@ async function readDocument(file) {
   return result.value;
 }
 function makeLessons(text, documentId) {
-  const sentences = [...new Set((text.match(/[A-Za-z][A-Za-z0-9 ,.'!?;:’\-]{7,}[.!?]/g) || [])
+  // Keep a substantial part of each document. The old 10-sentence ceiling made a
+  // long lesson feel like the same tiny quiz over and over.
+  const seen = new Set();
+  const sentences = (text.match(/[A-Za-z][A-Za-z0-9 ,.'!?;:’\-]{7,}[.!?]/g) || [])
     .map(s => s.replace(/\s+/g, ' ').trim())
-    .filter(s => s.split(' ').length >= 3 && s.split(' ').length <= 22))].slice(0, 10);
+    .filter(s => {
+      const words=s.split(' ');
+      const key=s.toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+      return words.length >= 3 && words.length <= 34 && key.length > 12 && !seen.has(key) && (seen.add(key), true);
+    })
+    .slice(0, 160);
   if (!sentences.length) return;
   const extracted = sentences.map((sentence, i) => {
     const key = sentence.replace(/[.!?]/g, '').split(' ').slice(0, 5).join(' ');
     return { n: String(i + 1).padStart(2, '0'), title: key, meaning: '문서에서 찾은 핵심 문장', translation: '문서에서 추출한 핵심 문장입니다.', explanation: '문서 문맥에서 이 문장이 어떻게 쓰였는지 들어보며 익혀보세요.', sentence, tag: '문서 표현', documentId };
   });
   lessonBank = lessonBank.filter(lesson => lesson.documentId !== documentId).concat(extracted);
+  save();
   refreshLessons();
 }
 async function addFiles(files){
