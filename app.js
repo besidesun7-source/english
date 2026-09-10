@@ -167,25 +167,7 @@ function makeLessons(text, documentId) {
     lessonBank = lessonBank.filter(lesson => lesson.documentId !== documentId).concat(structured);
     save(); refreshLessons(); return;
   }
-  // Keep a substantial part of each document. The old 10-sentence ceiling made a
-  // long lesson feel like the same tiny quiz over and over.
-  const seen = new Set();
-  const sentences = (text.match(/[A-Za-z][A-Za-z0-9 ,.'!?;:’\-]{7,}[.!?]/g) || [])
-    .map(s => s.replace(/\s+/g, ' ').trim())
-    .filter(s => {
-      const words=s.split(' ');
-      const key=s.toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
-      return words.length >= 3 && words.length <= 34 && key.length > 12 && !seen.has(key) && (seen.add(key), true);
-    })
-    .slice(0, 160);
-  if (!sentences.length) return;
-  const extracted = sentences.map((sentence, i) => {
-    const key = sentence.replace(/[.!?]/g, '').split(' ').slice(0, 5).join(' ');
-    return { n: String(i + 1).padStart(2, '0'), title: key, meaning: '번역이 없는 원문 문장', translation: '이 문서는 한국어 해석을 찾지 못했습니다.', explanation: '한국어 해석이 포함된 PDF 또는 DOCX를 올리면 원문과 뜻을 짝지어 학습합니다.', sentence, tag: '원문 문장', documentId };
-  });
-  lessonBank = lessonBank.filter(lesson => lesson.documentId !== documentId).concat(extracted);
-  save();
-  refreshLessons();
+  throw new Error('AI 분석을 기다리는 문서입니다. 의미가 틀린 임시 문제는 만들지 않았어요.');
 }
 function setAiLessons(cards, documentId) {
   const clean = cards.filter(card => card && card.title && card.meaning && card.sentence && card.translation)
@@ -221,7 +203,7 @@ async function addFiles(files){
       doc.count = lessonBank.filter(lesson => lesson.documentId === id).length;
     } catch (error) {
       const doc = docs.find(d => d.id === id);
-      doc.date = '읽을 수 없는 문서';
+      doc.date = error.message || '읽을 수 없는 문서';
     }
   }
   save(); renderSources(); renderDocs();
