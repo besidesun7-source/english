@@ -250,13 +250,14 @@ function setAnalysisStatus(name, active){
   if(active){ $('#analysisTitle').textContent=`GPT가 “${name}”을 분석하고 있어요`; }
   if(!analysisJobs){ clearInterval(analysisTicker); analysisStartedAt=0; }
 }
+function clearAnalysisStatus(){ analysisJobs=0; clearInterval(analysisTicker); analysisStartedAt=0; $('#analysisNotice').hidden=true; }
 window.cancelAnalysis=id=>{
   const doc=docs.find(item=>item.id===id); if(!doc)return;
   cancelledAnalyses.add(id); analysisControllers.get(id)?.abort();
   docs=docs.filter(item=>item.id!==id); lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id);
   setAnalysisStatus(doc.name,false); save(); refreshLessons(); renderDocs();
 };
-$('#cancelAllAnalyses').onclick=()=>docs.filter(doc=>doc.analyzing).forEach(doc=>window.cancelAnalysis(doc.id));
+$('#cancelAllAnalyses').onclick=()=>{ docs.filter(doc=>doc.analyzing).forEach(doc=>window.cancelAnalysis(doc.id)); clearAnalysisStatus(); };
 async function addFiles(files){
   for (const f of files) {
     if (!/\.(pdf|docx)$/i.test(f.name)) continue;
