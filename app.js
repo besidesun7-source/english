@@ -98,14 +98,75 @@ async function readDocument(file) {
     const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
     const pages = await Promise.all(Array.from({ length: pdf.numPages }, async (_, index) => {
       const content = await (await pdf.getPage(index + 1)).getTextContent();
-      return content.items.map(item => item.str).join(' ');
+      // PDF text is positioned, not inherently line-based. Rebuild its visible
+      // rows (and table columns) so that English, Korean translations, and
+      // expression/meaning pairs do not get separated during extraction.
+      const rows = [];
+      content.items.forEach(item => {
+        const y = Math.round(item.transform[5]);
+        let row = rows.find(candidate => Math.abs(candidate.y - y) <= 2);
+        if (!row) { row = { y, items: [] }; rows.push(row); }
+        row.items.push({ text: item.str, x: item.transform[4], width: item.width || 0 });
+      });
+      return rows.sort((a,b) => b.y-a.y).map(row => {
+        const items = row.items.sort((a,b) => a.x-b.x);
+        let previous;
+        return items.map(item => {
+          const gap = previous ? item.x - (previous.x + previous.width) : 0;
+          previous = item;
+          return `${gap > 30 ? '\t' : ' '}${item.text}`;
+        }).join('').trim();
+      }).filter(Boolean).join('\n');
     }));
     return pages.join('\n');
   }
   const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
   return result.value;
 }
+function documentLessons(text, documentId) {
+  const lines = text.split(/\n+/).map(line => line.trim()).filter(Boolean);
+  const results = [], used = new Set();
+  const isHeader = line => /^(핵심\s*표현|말하기\s*틀|표현\s*\t?\s*뜻|DAY\s*\d|\d{2}\.|영어\s*원문|해석)$/i.test(line.replace(/\s+/g,' '));
+  const add = lesson => {
+    const key = `${lesson.title}|${lesson.translation}`.toLowerCase();
+    if (!used.has(key) && lesson.title && lesson.translation) { used.add(key); results.push({ ...lesson, documentId }); }
+  };
+
+  // This matches the study-PDF layout: "영어 원문" followed by "해석".
+  for (let i=0; i<lines.length; i++) {
+    if (!/^영어\s*원문$/i.test(lines[i].replace(/\s+/g,''))) continue;
+    const english = [], korean = [];
+    let readingKorean = false;
+    for (i=i+1; i<lines.length; i++) {
+      const line = lines[i];
+      if (/^해석$/i.test(line.replace(/\s+/g,''))) { readingKorean=true; continue; }
+      if (/^(핵심\s*표현|말하기\s*틀|영어\s*원문|\d{2}\.|DAY\s*\d)/i.test(line)) { i--; break; }
+      if (readingKorean) korean.push(line); else english.push(line);
+    }
+    const sentence = english.join(' ').replace(/\s+/g,' ').trim();
+    const translation = korean.join(' ').replace(/\s+/g,' ').trim();
+    if (sentence && translation) {
+      const title = sentence.replace(/[.!?].*/, '').split(' ').slice(0,7).join(' ');
+      add({ n:'', title, meaning:translation, sentence, translation, explanation:'문서의 영어 원문과 해석을 함께 듣고, 핵심 표현을 문맥 속에서 익혀보세요.', tag:'지문 이해' });
+    }
+  }
+
+  // Table rows are rebuilt with tabs above, e.g. "sleep in\t늦잠 자다".
+  lines.forEach(line => {
+    const pair = line.split('\t').map(part => part.trim()).filter(Boolean);
+    if (pair.length < 2 || isHeader(line)) return;
+    const [english, korean] = pair;
+    if (!/[A-Za-z]/.test(english) || !/[가-힣]/.test(korean) || english.length > 80) return;
+    add({ n:'', title:english, meaning:korean, sentence:english, translation:korean, explanation:'PDF의 핵심 표현 표에 나온 뜻입니다. 먼저 뜻을 듣고, 영어 표현을 따라 말해보세요.', tag:'핵심 표현' });
+  });
+  return results.slice(0,160).map((lesson, index) => ({ ...lesson, n:String(index+1).padStart(2,'0') }));
+}
 function makeLessons(text, documentId) {
+  const structured = documentLessons(text, documentId);
+  if (structured.length) {
+    lessonBank = lessonBank.filter(lesson => lesson.documentId !== documentId).concat(structured);
+    save(); refreshLessons(); return;
+  }
   // Keep a substantial part of each document. The old 10-sentence ceiling made a
   // long lesson feel like the same tiny quiz over and over.
   const seen = new Set();
@@ -120,21 +181,41 @@ function makeLessons(text, documentId) {
   if (!sentences.length) return;
   const extracted = sentences.map((sentence, i) => {
     const key = sentence.replace(/[.!?]/g, '').split(' ').slice(0, 5).join(' ');
-    return { n: String(i + 1).padStart(2, '0'), title: key, meaning: '문서에서 찾은 핵심 문장', translation: '문서에서 추출한 핵심 문장입니다.', explanation: '문서 문맥에서 이 문장이 어떻게 쓰였는지 들어보며 익혀보세요.', sentence, tag: '문서 표현', documentId };
+    return { n: String(i + 1).padStart(2, '0'), title: key, meaning: '번역이 없는 원문 문장', translation: '이 문서는 한국어 해석을 찾지 못했습니다.', explanation: '한국어 해석이 포함된 PDF 또는 DOCX를 올리면 원문과 뜻을 짝지어 학습합니다.', sentence, tag: '원문 문장', documentId };
   });
   lessonBank = lessonBank.filter(lesson => lesson.documentId !== documentId).concat(extracted);
   save();
   refreshLessons();
 }
+function setAiLessons(cards, documentId) {
+  const clean = cards.filter(card => card && card.title && card.meaning && card.sentence && card.translation)
+    .slice(0,160).map((card,index) => ({
+      n:String(index+1).padStart(2,'0'), title:card.title.trim(), meaning:card.meaning.trim(),
+      sentence:card.sentence.trim(), translation:card.translation.trim(),
+      explanation:(card.explanation || '문서의 문맥과 함께 익혀보세요.').trim(), tag:(card.tag || 'AI 학습').trim(), documentId
+    }));
+  if (!clean.length) throw new Error('AI가 학습 항목을 만들지 못했습니다.');
+  lessonBank = lessonBank.filter(lesson => lesson.documentId !== documentId).concat(clean);
+  save(); refreshLessons();
+}
+async function analyzeDocument(text, name) {
+  const response = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text,name}) });
+  if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || 'AI 분석 오류');
+  const result = await response.json();
+  return result.lessons;
+}
 async function addFiles(files){
   for (const f of files) {
     if (!/\.(pdf|docx)$/i.test(f.name)) continue;
-    const id = String(Date.now() + Math.random());
-    docs.unshift({id,name:f.name,date:'텍스트 읽는 중…',enabled:true,count:0,color:'#63a88e'});
+    const existing = docs.find(doc => doc.name === f.name);
+    const id = existing?.id || String(Date.now() + Math.random());
+    if (existing) { existing.date='AI가 학습 자료 만드는 중…'; existing.enabled=true; existing.count=0; lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id); }
+    else docs.unshift({id,name:f.name,date:'AI가 학습 자료 만드는 중…',enabled:true,count:0,color:'#63a88e'});
     renderSources(); renderDocs();
     try {
       const text = await readDocument(f);
-      makeLessons(text, id);
+      try { setAiLessons(await analyzeDocument(text, f.name), id); }
+      catch (aiError) { makeLessons(text, id); }
       const doc = docs.find(d => d.id === id);
       doc.date = new Date().toLocaleDateString('ko-KR').replace(/\. /g,'.').replace(/\.$/,'');
       doc.count = lessonBank.filter(lesson => lesson.documentId === id).length;
