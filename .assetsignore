@@ -1,0 +1,16 @@
+.git
+node_modules
+.env
+.env.*
+Dockerfile
+render.yaml
+server.mjs
+cloudflare-worker.js
+wrangler.jsonc
+package.json
+package-lock.json
+vite.config.js
+README.md
+example.env
+.gitignore
+.assetsignore

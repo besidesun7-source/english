@@ -1,6 +1,6 @@
 {
   "name": "lingo-note",
   "version": "1.0.0",
-  "scripts": { "start": "node server.mjs" },
+  "scripts": { "start": "node server.mjs", "deploy:cloudflare": "npx wrangler deploy" },
   "devDependencies": { "vite": "^6.1.0" }
 }
