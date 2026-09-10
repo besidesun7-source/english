@@ -60,7 +60,7 @@ function shuffle(items){ const copy=[...items]; for(let i=copy.length-1;i>0;i--)
 function refreshLessons(){ if(playing){ stopSpeech(); playing=false; $('#togglePlay').textContent='▶'; } playQueue=[]; sessionEndsAt=0; const enabled = new Set(docs.filter(d=>d.enabled).map(d=>d.id)); lessons = lessonBank.filter(lesson => enabled.has(lesson.documentId)); current = 0; renderSources(); renderLessons(); }
 function renderSources(){ $('#sourceChips').innerHTML = docs.filter(d=>d.enabled).map(d=>`<span class="source-chip"><i style="background:${d.color}"></i>${d.name}<button onclick="toggleDoc('${d.id}')">×</button></span>`).join('') || '<span class="muted">문서를 선택해주세요</span>'; $('#lessonCount').textContent = lessons.length; }
 function renderLessons(){ $('#lessonCards').innerHTML = lessons.length ? lessons.map((l,i)=>`<button class="lesson-card" onclick="openPlayer(${i})"><span class="lesson-num">${l.n}</span><div><span class="tag">${l.tag}</span><b>${l.title}</b><small>${l.meaning}</small></div><span class="speak">◖</span></button>`).join('') : '<p class="empty-lessons">선택한 문서에서 아직 학습할 표현을 찾지 못했어요.</p>'; }
-function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small>${d.date} · 핵심 표현 ${d.count}개</small></div><button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button><button class="dots">•••</button></div>`).join(''); }
+function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small class="${d.analyzing?'analysis-state':''}">${d.analyzing?'✦ GPT 분석 중…':`${d.date} · 핵심 표현 ${d.count}개`}</small></div><button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button><button class="dots">•••</button></div>`).join(''); }
 function renderScope(){ $('#scopeOptions').innerHTML=docs.map(d=>`<label class="scope-option"><input type="checkbox" data-id="${d.id}" ${d.enabled?'checked':''}/><span class="check"></span><span><b>${d.name}</b><small>핵심 표현 ${d.count}개</small></span></label>`).join(''); }
 window.toggleDoc=id=>{ const d=docs.find(x=>x.id===id); d.enabled=!d.enabled; save(); refreshLessons(); renderDocs();renderScope(); };
 function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); if(id==='voice-cache')renderVoiceCache(); }
@@ -239,13 +239,20 @@ async function analyzeDocument(text, name) {
   const result = await response.json();
   return result.lessons;
 }
+let analysisJobs=0;
+function setAnalysisStatus(name, active){
+  analysisJobs=Math.max(0,analysisJobs+(active?1:-1)); const notice=$('#analysisNotice');
+  notice.hidden=analysisJobs===0;
+  if(active){ $('#analysisTitle').textContent=`GPT가 “${name}”을 분석하고 있어요`; $('#analysisDetail').textContent='영어 표현, 자연스러운 뜻, 예문과 설명을 학습 카드로 정리하는 중이에요.'; }
+}
 async function addFiles(files){
   for (const f of files) {
     if (!/\.(pdf|docx)$/i.test(f.name)) continue;
     const existing = docs.find(doc => doc.name === f.name);
     const id = existing?.id || String(Date.now() + Math.random());
-    if (existing) { existing.date='AI가 학습 자료 만드는 중…'; existing.enabled=true; existing.count=0; lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id); }
-    else docs.unshift({id,name:f.name,date:'AI가 학습 자료 만드는 중…',enabled:true,count:0,color:'#63a88e'});
+    if (existing) { existing.date='AI가 학습 자료 만드는 중…'; existing.analyzing=true; existing.enabled=true; existing.count=0; lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id); }
+    else docs.unshift({id,name:f.name,date:'AI가 학습 자료 만드는 중…',analyzing:true,enabled:true,count:0,color:'#63a88e'});
+    setAnalysisStatus(f.name,true);
     renderSources(); renderDocs();
     try {
       const text = await readDocument(f);
@@ -258,6 +265,9 @@ async function addFiles(files){
     } catch (error) {
       const doc = docs.find(d => d.id === id);
       doc.date = error.message || '읽을 수 없는 문서';
+    } finally {
+      const doc = docs.find(d => d.id === id); if(doc) doc.analyzing=false;
+      setAnalysisStatus(f.name,false); renderDocs();
     }
   }
   save(); renderSources(); renderDocs();
