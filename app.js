@@ -16,6 +16,29 @@ let playing = false, current = 0, auto = true, timer, ttsAudio, playbackId = 0;
 let playQueue = [], queueIndex = 0, sessionEndsAt = 0, audioPattern = 0;
 const SESSION_MINUTES = 30;
 const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
+let librarySyncTimer, vaultKey, vaultId;
+const encoder = new TextEncoder(), decoder = new TextDecoder();
+const bytesToBase64 = bytes => { let text=''; for(let start=0;start<bytes.length;start+=0x8000) text+=String.fromCharCode(...bytes.subarray(start,start+0x8000)); return btoa(text); };
+const base64ToBytes = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
+async function createVault(password){
+  const secret=await crypto.subtle.importKey('raw',encoder.encode(password),'PBKDF2',false,['deriveKey','deriveBits']);
+  const salt=encoder.encode('doo-note-private-library-v1');
+  vaultKey=await crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:150000,hash:'SHA-256'},secret,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+  const digest=await crypto.subtle.digest('SHA-256',encoder.encode(`doo-note-vault:${password}`)); vaultId=[...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+}
+async function encryptLibrary(data){ const iv=crypto.getRandomValues(new Uint8Array(12)); const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv},vaultKey,encoder.encode(JSON.stringify(data))); return JSON.stringify({iv:bytesToBase64(iv),cipher:bytesToBase64(new Uint8Array(cipher))}); }
+async function decryptLibrary(payload){ const data=JSON.parse(payload), plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:base64ToBytes(data.iv)},vaultKey,base64ToBytes(data.cipher)); return JSON.parse(decoder.decode(plain)); }
+async function syncLibrary(){
+  if(!vaultKey || !vaultId)return;
+  try { const payload=await encryptLibrary({docs,lessonBank}); await fetch('/api/library', {method:'POST',headers:{'Content-Type':'application/json','x-doo-library-id':vaultId},body:JSON.stringify({payload})}); } catch { /* Local browser storage remains available when offline. */ }
+}
+function queueLibrarySync(){ if(!vaultKey)return; clearTimeout(librarySyncTimer); librarySyncTimer=setTimeout(syncLibrary,700); }
+async function restoreLibrary(){
+  if(!vaultKey || !vaultId)return;
+  const response=await fetch('/api/library',{headers:{'x-doo-library-id':vaultId}}); if(!response.ok)return;
+  const remote=await response.json(); if(!remote.payload){ queueLibrarySync(); return; }
+  const library=await decryptLibrary(remote.payload); if(library.docs?.length){ docs=library.docs; lessonBank=library.lessonBank || []; save(); refreshLessons(); renderDocs(); }
+}
 const audioDb = new Promise((resolve, reject) => {
   const request = indexedDB.open('doo-note-audio', 1);
   request.onupgradeneeded = () => request.result.createObjectStore('tracks', { keyPath: 'key' });
@@ -31,7 +54,7 @@ async function renderVoiceCache(){
   list.innerHTML=tracks.length ? tracks.map(track=>`<div class="voice-cache-row"><span class="voice-cache-icon">◖</span><div class="voice-cache-copy"><b>${track.title}</b><small>${track.meaning} · ${track.mode}</small></div><button class="voice-cache-play" onclick="playCachedAudio('${track.key}')">▶ 재생</button></div>`).join('') : '<div class="voice-cache-empty"><b>아직 저장된 음성이 없어요.</b>듣기 모드에서 한 번 재생하면 여기에 자동으로 보관됩니다.</div>';
 }
 window.playCachedAudio=async key=>{ const track=await getCachedAudio(key); if(!track)return; stopSpeech(); playing=false; ttsAudio=new Audio(URL.createObjectURL(track.blob)); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}; await ttsAudio.play(); };
-function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); localStorage.setItem('lingo-lesson-bank', JSON.stringify(lessonBank)); }
+function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); localStorage.setItem('lingo-lesson-bank', JSON.stringify(lessonBank)); queueLibrarySync(); }
 function activeLesson(){ return playQueue.length ? playQueue[queueIndex] : lessons[current]; }
 function shuffle(items){ const copy=[...items]; for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];} return copy; }
 function refreshLessons(){ if(playing){ stopSpeech(); playing=false; $('#togglePlay').textContent='▶'; } playQueue=[]; sessionEndsAt=0; const enabled = new Set(docs.filter(d=>d.enabled).map(d=>d.id)); lessons = lessonBank.filter(lesson => enabled.has(lesson.documentId)); current = 0; renderSources(); renderLessons(); }
@@ -226,6 +249,7 @@ async function addFiles(files){
     renderSources(); renderDocs();
     try {
       const text = await readDocument(f);
+      docs.find(d => d.id === id).sourceText = text.slice(0,1500000);
       try { setAiLessons(await analyzeDocument(text, f.name), id); }
       catch (aiError) { makeLessons(text, id); }
       const doc = docs.find(d => d.id === id);
@@ -241,3 +265,6 @@ async function addFiles(files){
 $('#fileInput').onchange=e=>addFiles(e.target.files); $('#uploadZone').ondragover=e=>{e.preventDefault();$('#uploadZone').classList.add('drag')};$('#uploadZone').ondragleave=()=>$('#uploadZone').classList.remove('drag');$('#uploadZone').ondrop=e=>{e.preventDefault();$('#uploadZone').classList.remove('drag');addFiles(e.dataTransfer.files)};
 $('.mobile-menu').onclick=()=>$('.sidebar').classList.toggle('open');
 refreshLessons();renderDocs();
+$('#syncForm').onsubmit=async e=>{ e.preventDefault(); const password=$('#syncPassword').value; if(!password)return; const button=$('#syncForm button'); button.disabled=true; button.textContent='암호화 보관함 여는 중…'; try { await createVault(password); await restoreLibrary(); hide('#syncModal'); } catch { $('#syncPassword').value=''; $('#syncPassword').placeholder='비밀번호가 맞지 않거나 연결할 수 없어요'; } finally { button.disabled=false; button.textContent='암호화 보관함 연결'; } };
+$('#skipSync').onclick=()=>hide('#syncModal');
+show('#syncModal');

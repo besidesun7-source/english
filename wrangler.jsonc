@@ -3,6 +3,12 @@
   "name": "lingo-note",
   "main": "./cloudflare-worker.js",
   "compatibility_date": "2026-09-10",
+  "kv_namespaces": [
+    {
+      "binding": "DOO_NOTE_LIBRARY",
+      "id": "83d5cfe2f5854df684d43ff5cfb835f5"
+    }
+  ],
   "assets": {
     "directory": "./",
     "binding": "ASSETS",
