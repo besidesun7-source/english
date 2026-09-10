@@ -30,9 +30,10 @@ async function encryptLibrary(data){ const iv=crypto.getRandomValues(new Uint8Ar
 async function decryptLibrary(payload){ const data=JSON.parse(payload), plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:base64ToBytes(data.iv)},vaultKey,base64ToBytes(data.cipher)); return JSON.parse(decoder.decode(plain)); }
 async function syncLibrary(){
   if(!vaultKey || !vaultId)return;
-  try { const payload=await encryptLibrary({docs,lessonBank}); await fetch('/api/library', {method:'POST',headers:{'Content-Type':'application/json','x-doo-library-id':vaultId},body:JSON.stringify({payload})}); } catch { /* Local browser storage remains available when offline. */ }
+  try { const payload=await encryptLibrary({docs,lessonBank}); const response=await fetch('/api/library', {method:'POST',headers:{'Content-Type':'application/json','x-doo-library-id':vaultId},body:JSON.stringify({payload})}); if(!response.ok)throw new Error('sync failed'); updateSyncUi('서버 보관함에 안전하게 동기화됐어요.'); } catch { updateSyncUi('동기화하지 못했어요. 연결 상태를 확인해 주세요.'); }
 }
 function queueLibrarySync(){ if(!vaultKey)return; clearTimeout(librarySyncTimer); librarySyncTimer=setTimeout(syncLibrary,700); }
+function updateSyncUi(message){ const button=$('#openSync'), notice=$('#syncNotice'); if(button)button.textContent=vaultKey?'서버 보관함 동기화됨':'서버 보관함 연결'; if(notice)notice.textContent=message || (vaultKey?'문서 텍스트와 GPT 분석 결과가 암호화되어 서버 보관함에 자동 동기화됩니다.':'서버 보관함을 연결하면 문서 텍스트와 GPT 분석 결과가 암호화되어 다른 기기에도 동기화됩니다.'); }
 async function restoreLibrary(){
   if(!vaultKey || !vaultId)return;
   const response=await fetch('/api/library',{headers:{'x-doo-library-id':vaultId}}); if(!response.ok)return;
@@ -289,6 +290,8 @@ async function addFiles(files){
 $('#fileInput').onchange=e=>addFiles(e.target.files); $('#uploadZone').ondragover=e=>{e.preventDefault();$('#uploadZone').classList.add('drag')};$('#uploadZone').ondragleave=()=>$('#uploadZone').classList.remove('drag');$('#uploadZone').ondrop=e=>{e.preventDefault();$('#uploadZone').classList.remove('drag');addFiles(e.dataTransfer.files)};
 $('.mobile-menu').onclick=()=>$('.sidebar').classList.toggle('open');
 refreshLessons();renderDocs();
-$('#syncForm').onsubmit=async e=>{ e.preventDefault(); const password=$('#syncPassword').value; if(!password)return; const button=$('#syncForm button'); button.disabled=true; button.textContent='암호화 보관함 여는 중…'; try { await createVault(password); await restoreLibrary(); hide('#syncModal'); } catch { $('#syncPassword').value=''; $('#syncPassword').placeholder='비밀번호가 맞지 않거나 연결할 수 없어요'; } finally { button.disabled=false; button.textContent='암호화 보관함 연결'; } };
+$('#syncForm').onsubmit=async e=>{ e.preventDefault(); const password=$('#syncPassword').value; if(!password)return; const button=$('#syncForm button'); button.disabled=true; button.textContent='암호화 보관함 여는 중…'; try { await createVault(password); await restoreLibrary(); updateSyncUi(); hide('#syncModal'); } catch { $('#syncPassword').value=''; $('#syncPassword').placeholder='비밀번호가 맞지 않거나 연결할 수 없어요'; } finally { button.disabled=false; button.textContent='암호화 보관함 연결'; } };
 $('#skipSync').onclick=()=>hide('#syncModal');
+$('#openSync').onclick=()=>{ if(vaultKey){ syncLibrary(); return; } $('#syncPassword').value=''; show('#syncModal'); };
+updateSyncUi();
 show('#syncModal');
