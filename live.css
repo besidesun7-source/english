@@ -1,0 +1,1 @@
+.live-controls{display:flex;gap:8px;margin:0 0 12px}.live-button,.end-live{flex:1;border-radius:9px;padding:11px;color:#fff;font-size:12px;font-weight:700}.live-button{background:#7863dd}.live-button:disabled{opacity:.65}.end-live{background:#443e4a}
