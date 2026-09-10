@@ -16,6 +16,21 @@ let playing = false, current = 0, auto = true, timer, ttsAudio, playbackId = 0;
 let playQueue = [], queueIndex = 0, sessionEndsAt = 0, audioPattern = 0;
 const SESSION_MINUTES = 30;
 const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
+const audioDb = new Promise((resolve, reject) => {
+  const request = indexedDB.open('doo-note-audio', 1);
+  request.onupgradeneeded = () => request.result.createObjectStore('tracks', { keyPath: 'key' });
+  request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+});
+function audioKey(text){ let hash=5381; for(let i=0;i<text.length;i++) hash=((hash<<5)+hash)^text.charCodeAt(i); return `tts-${hash>>>0}`; }
+async function getCachedAudio(key){ const db=await audioDb; return new Promise(resolve=>{const request=db.transaction('tracks').objectStore('tracks').get(key);request.onsuccess=()=>resolve(request.result);request.onerror=()=>resolve(null);}); }
+async function saveCachedAudio(track){ const db=await audioDb; return new Promise((resolve,reject)=>{const request=db.transaction('tracks','readwrite').objectStore('tracks').put(track);request.onsuccess=resolve;request.onerror=()=>reject(request.error);}); }
+async function cachedAudioList(){ const db=await audioDb; return new Promise(resolve=>{const request=db.transaction('tracks').objectStore('tracks').getAll();request.onsuccess=()=>resolve(request.result.sort((a,b)=>b.savedAt-a.savedAt));request.onerror=()=>resolve([]);}); }
+async function clearCachedAudio(){ const db=await audioDb; return new Promise(resolve=>{const request=db.transaction('tracks','readwrite').objectStore('tracks').clear();request.onsuccess=resolve;request.onerror=resolve;}); }
+async function renderVoiceCache(){
+  const list=$('#voiceCacheList'); if(!list)return; const tracks=await cachedAudioList();
+  list.innerHTML=tracks.length ? tracks.map(track=>`<div class="voice-cache-row"><span class="voice-cache-icon">◖</span><div class="voice-cache-copy"><b>${track.title}</b><small>${track.meaning} · ${track.mode}</small></div><button class="voice-cache-play" onclick="playCachedAudio('${track.key}')">▶ 재생</button></div>`).join('') : '<div class="voice-cache-empty"><b>아직 저장된 음성이 없어요.</b>듣기 모드에서 한 번 재생하면 여기에 자동으로 보관됩니다.</div>';
+}
+window.playCachedAudio=async key=>{ const track=await getCachedAudio(key); if(!track)return; stopSpeech(); playing=false; ttsAudio=new Audio(URL.createObjectURL(track.blob)); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}; await ttsAudio.play(); };
 function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); localStorage.setItem('lingo-lesson-bank', JSON.stringify(lessonBank)); }
 function activeLesson(){ return playQueue.length ? playQueue[queueIndex] : lessons[current]; }
 function shuffle(items){ const copy=[...items]; for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];} return copy; }
@@ -25,7 +40,7 @@ function renderLessons(){ $('#lessonCards').innerHTML = lessons.length ? lessons
 function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small>${d.date} · 핵심 표현 ${d.count}개</small></div><button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button><button class="dots">•••</button></div>`).join(''); }
 function renderScope(){ $('#scopeOptions').innerHTML=docs.map(d=>`<label class="scope-option"><input type="checkbox" data-id="${d.id}" ${d.enabled?'checked':''}/><span class="check"></span><span><b>${d.name}</b><small>핵심 표현 ${d.count}개</small></span></label>`).join(''); }
 window.toggleDoc=id=>{ const d=docs.find(x=>x.id===id); d.enabled=!d.enabled; save(); refreshLessons(); renderDocs();renderScope(); };
-function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); }
+function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); if(id==='voice-cache')renderVoiceCache(); }
 $$('.nav-item').forEach(n=>n.onclick=()=>page(n.dataset.page));
 function show(id){ $(id).classList.add('show'); } function hide(id){ $(id).classList.remove('show'); }
 function closeModal(modal){
@@ -73,9 +88,17 @@ async function speak(){
     }else{playing=false;$('#togglePlay').textContent='▶'}
   };
   try{
-    const response=await fetch('/api/speech',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:lessonScript(lesson)})});
-    if(!response.ok)throw new Error('TTS unavailable');
-    ttsAudio=new Audio(URL.createObjectURL(await response.blob())); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null;moveNext()}; ttsAudio.play();
+    const script=lessonScript(lesson), key=audioKey(script);
+    let cached=await getCachedAudio(key), audioBlob=cached?.blob;
+    if(!audioBlob){
+      const response=await fetch('/api/speech',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:script})});
+      if(!response.ok)throw new Error('TTS unavailable');
+      audioBlob=await response.blob();
+      try { await saveCachedAudio({key,blob:audioBlob,title:lesson.title,meaning:lesson.meaning,mode:`${intensiveListening?'강화':'일반'} 듣기 · 구성 ${audioPattern+1}`,savedAt:Date.now()}); } catch { /* Audio still plays if this device's storage is full. */ }
+      if ($('#voice-cache').classList.contains('active-page')) renderVoiceCache();
+    }
+    if(run!==playbackId || !playing)return;
+    ttsAudio=new Audio(URL.createObjectURL(audioBlob)); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null;moveNext()}; ttsAudio.play();
   }catch{
     browserLessonAudio(lesson,moveNext);
   }
@@ -84,6 +107,7 @@ function stopSpeech(){playbackId++;speechSynthesis.cancel();if(ttsAudio){ttsAudi
 function movePlayer(step){ stopSpeech(); if(playQueue.length) queueIndex=(queueIndex+step+playQueue.length)%playQueue.length; else current=(current+step+lessons.length)%lessons.length; updatePlayer(); if(playing)speak(); }
 $('#togglePlay').onclick=()=>{if(playing){stopSpeech();playing=false;$('#togglePlay').textContent='▶'}else speak()}; $('#next').onclick=()=>movePlayer(1);$('#prev').onclick=()=>movePlayer(-1);$('#autoToggle').onclick=e=>{auto=!auto;e.currentTarget.classList.toggle('on',auto)};
 $('#intensiveToggle').onclick=e=>{intensiveListening=!intensiveListening;e.currentTarget.classList.toggle('on',intensiveListening);$('#intensiveLabel').textContent=intensiveListening?'강화 듣기 · 설명 포함':'일반 듣기 · 뜻과 예문'};
+$('#clearVoiceCache').onclick=async()=>{ await clearCachedAudio(); renderVoiceCache(); };
 let qIndex=0, liveConnection, liveStream, liveAudio, questions=[];
 function buildQuestions(){
   const patterns = [
