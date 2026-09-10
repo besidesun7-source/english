@@ -69,7 +69,7 @@ function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="d
 function renderScope(){ $('#scopeOptions').innerHTML=docs.map(d=>`<label class="scope-option"><input type="checkbox" data-id="${d.id}" ${d.enabled?'checked':''}/><span class="check"></span><span><b>${d.name}</b><small>핵심 표현 ${d.count}개</small></span></label>`).join(''); }
 window.toggleDoc=id=>{ const d=docs.find(x=>x.id===id); d.enabled=!d.enabled; save(); refreshLessons(); renderDocs();renderScope(); };
 window.deleteDoc=id=>{ const doc=docs.find(item=>item.id===id); if(!doc || !confirm(`“${doc.name}” 문서와 분석 결과를 삭제할까요?`))return; analysisControllers.get(id)?.abort(); cancelledAnalyses.add(id); docs=docs.filter(item=>item.id!==id); lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id); save(); refreshLessons(); renderDocs(); renderScope(); };
-function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); if(id==='voice-cache')renderVoiceCache(); }
+function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); $('.sidebar').classList.remove('open'); if(id==='voice-cache')renderVoiceCache(); }
 $$('.nav-item').forEach(n=>n.onclick=()=>page(n.dataset.page));
 function show(id){ $(id).classList.add('show'); } function hide(id){ $(id).classList.remove('show'); }
 function closeModal(modal){
@@ -291,6 +291,7 @@ async function addFiles(files){
 }
 $('#fileInput').onchange=e=>addFiles(e.target.files); $('#uploadZone').ondragover=e=>{e.preventDefault();$('#uploadZone').classList.add('drag')};$('#uploadZone').ondragleave=()=>$('#uploadZone').classList.remove('drag');$('#uploadZone').ondrop=e=>{e.preventDefault();$('#uploadZone').classList.remove('drag');addFiles(e.dataTransfer.files)};
 $('.mobile-menu').onclick=()=>$('.sidebar').classList.toggle('open');
+document.querySelector('main').onclick=()=>$('.sidebar').classList.remove('open');
 refreshLessons();renderDocs();
 $('#syncForm').onsubmit=async e=>{ e.preventDefault(); const password=$('#syncPassword').value; if(!password)return; const button=$('#syncForm button'); button.disabled=true; button.textContent='암호화 보관함 여는 중…'; try { await createVault(password); await restoreLibrary(); updateSyncUi(); hide('#syncModal'); } catch { $('#syncPassword').value=''; $('#syncPassword').placeholder='비밀번호가 맞지 않거나 연결할 수 없어요'; } finally { button.disabled=false; button.textContent='암호화 보관함 연결'; } };
 $('#skipSync').onclick=()=>hide('#syncModal');
