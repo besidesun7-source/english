@@ -234,16 +234,19 @@ function setAiLessons(cards, documentId) {
   save(); refreshLessons();
 }
 async function analyzeDocument(text, name) {
-  const response = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text,name}) });
+  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),90000);
+  let response; try { response = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text,name}), signal:controller.signal }); } catch(error) { if(error.name==='AbortError') throw new Error('분석 시간이 길어져 중단됐어요. 다시 시도해주세요.'); throw error; } finally { clearTimeout(timeout); }
   if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || 'AI 분석 오류');
   const result = await response.json();
   return result.lessons;
 }
-let analysisJobs=0;
+let analysisJobs=0, analysisStartedAt=0, analysisTicker;
 function setAnalysisStatus(name, active){
   analysisJobs=Math.max(0,analysisJobs+(active?1:-1)); const notice=$('#analysisNotice');
   notice.hidden=analysisJobs===0;
-  if(active){ $('#analysisTitle').textContent=`GPT가 “${name}”을 분석하고 있어요`; $('#analysisDetail').textContent='영어 표현, 자연스러운 뜻, 예문과 설명을 학습 카드로 정리하는 중이에요.'; }
+  if(active && !analysisStartedAt){ analysisStartedAt=Date.now(); analysisTicker=setInterval(()=>{const seconds=Math.floor((Date.now()-analysisStartedAt)/1000); $('#analysisDetail').textContent=seconds<25?'영어 표현, 자연스러운 뜻, 예문과 설명을 정리하는 중이에요.':`문서 전체를 꼼꼼히 읽고 있어요 · ${seconds}초 경과`;},1000); }
+  if(active){ $('#analysisTitle').textContent=`GPT가 “${name}”을 분석하고 있어요`; }
+  if(!analysisJobs){ clearInterval(analysisTicker); analysisStartedAt=0; }
 }
 async function addFiles(files){
   for (const f of files) {
