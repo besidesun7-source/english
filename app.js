@@ -52,18 +52,23 @@ async function cachedAudioList(){ const db=await audioDb; return new Promise(res
 async function clearCachedAudio(){ const db=await audioDb; return new Promise(resolve=>{const request=db.transaction('tracks','readwrite').objectStore('tracks').clear();request.onsuccess=resolve;request.onerror=resolve;}); }
 async function renderVoiceCache(){
   const list=$('#voiceCacheList'); if(!list)return; const tracks=await cachedAudioList();
-  list.innerHTML=tracks.length ? tracks.map(track=>`<div class="voice-cache-row"><span class="voice-cache-icon">◖</span><div class="voice-cache-copy"><b>${track.title}</b><small>${track.meaning} · ${track.mode}</small></div><button class="voice-cache-play" onclick="playCachedAudio('${track.key}')">▶ 재생</button></div>`).join('') : '<div class="voice-cache-empty"><b>아직 저장된 음성이 없어요.</b>듣기 모드에서 한 번 재생하면 여기에 자동으로 보관됩니다.</div>';
+  if(!tracks.length){ list.innerHTML='<div class="voice-cache-empty"><b>아직 저장된 음성이 없어요.</b>듣기 모드에서 한 번 재생하면 여기에 자동으로 보관됩니다.</div>'; return; }
+  const groups=new Map(); tracks.forEach(track=>{const id=track.documentId || 'uncategorized'; if(!groups.has(id))groups.set(id,{name:track.documentName || '이전 보관 음성',tracks:[]}); groups.get(id).tracks.push(track);});
+  list.innerHTML=[...groups.entries()].map(([id,group])=>`<section class="voice-cache-group"><div class="voice-cache-group-head"><div><b>${group.name}</b><small>저장된 음성 ${group.tracks.length}개</small></div><button class="voice-cache-play-all" onclick="playCachedGroup('${id}')">▶ 모두 재생</button></div>${group.tracks.map(track=>`<div class="voice-cache-row"><span class="voice-cache-icon">◖</span><div class="voice-cache-copy"><b>${track.title}</b><small>${track.meaning} · ${track.mode}</small></div><button class="voice-cache-play" onclick="playCachedAudio('${track.key}')">▶ 재생</button></div>`).join('')}</section>`).join('');
 }
+let cachedPlaybackId=0;
 window.playCachedAudio=async key=>{ const track=await getCachedAudio(key); if(!track)return; stopSpeech(); playing=false; ttsAudio=new Audio(URL.createObjectURL(track.blob)); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}; await ttsAudio.play(); };
+window.playCachedGroup=async id=>{ const tracks=(await cachedAudioList()).filter(track=>(track.documentId || 'uncategorized')===id).sort((a,b)=>a.savedAt-b.savedAt); if(!tracks.length)return; stopSpeech(); playing=false; const run=cachedPlaybackId; const playNext=index=>{ if(run!==cachedPlaybackId || index>=tracks.length)return; const track=tracks[index]; ttsAudio=new Audio(URL.createObjectURL(track.blob)); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null;playNext(index+1)}; ttsAudio.play().catch(()=>playNext(index+1)); }; playNext(0); };
 function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); localStorage.setItem('lingo-lesson-bank', JSON.stringify(lessonBank)); queueLibrarySync(); }
 function activeLesson(){ return playQueue.length ? playQueue[queueIndex] : lessons[current]; }
 function shuffle(items){ const copy=[...items]; for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];} return copy; }
 function refreshLessons(){ if(playing){ stopSpeech(); playing=false; $('#togglePlay').textContent='▶'; } playQueue=[]; sessionEndsAt=0; const enabled = new Set(docs.filter(d=>d.enabled).map(d=>d.id)); lessons = lessonBank.filter(lesson => enabled.has(lesson.documentId)); current = 0; renderSources(); renderLessons(); }
 function renderSources(){ $('#sourceChips').innerHTML = docs.filter(d=>d.enabled).map(d=>`<span class="source-chip"><i style="background:${d.color}"></i>${d.name}<button onclick="toggleDoc('${d.id}')">×</button></span>`).join('') || '<span class="muted">문서를 선택해주세요</span>'; $('#lessonCount').textContent = lessons.length; }
 function renderLessons(){ $('#lessonCards').innerHTML = lessons.length ? lessons.map((l,i)=>`<button class="lesson-card" onclick="openPlayer(${i})"><span class="lesson-num">${l.n}</span><div><span class="tag">${l.tag}</span><b>${l.title}</b><small>${l.meaning}</small></div><span class="speak">◖</span></button>`).join('') : '<p class="empty-lessons">선택한 문서에서 아직 학습할 표현을 찾지 못했어요.</p>'; }
-function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small class="${d.analyzing?'analysis-state':''}">${d.analyzing?'✦ GPT 분석 중…':`${d.date} · 핵심 표현 ${d.count}개`}</small></div>${d.analyzing?`<button class="cancel-analysis" onclick="cancelAnalysis('${d.id}')">취소·삭제</button>`:`<button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button>`}<button class="dots">•••</button></div>`).join(''); }
+function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small class="${d.analyzing?'analysis-state':''}">${d.analyzing?'✦ GPT 분석 중…':`${d.date} · 핵심 표현 ${d.count}개`}</small></div>${d.analyzing?`<button class="cancel-analysis" onclick="cancelAnalysis('${d.id}')">취소·삭제</button>`:`<button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button>`}<button class="delete-doc" onclick="deleteDoc('${d.id}')">삭제</button></div>`).join(''); }
 function renderScope(){ $('#scopeOptions').innerHTML=docs.map(d=>`<label class="scope-option"><input type="checkbox" data-id="${d.id}" ${d.enabled?'checked':''}/><span class="check"></span><span><b>${d.name}</b><small>핵심 표현 ${d.count}개</small></span></label>`).join(''); }
 window.toggleDoc=id=>{ const d=docs.find(x=>x.id===id); d.enabled=!d.enabled; save(); refreshLessons(); renderDocs();renderScope(); };
+window.deleteDoc=id=>{ const doc=docs.find(item=>item.id===id); if(!doc || !confirm(`“${doc.name}” 문서와 분석 결과를 삭제할까요?`))return; analysisControllers.get(id)?.abort(); cancelledAnalyses.add(id); docs=docs.filter(item=>item.id!==id); lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id); save(); refreshLessons(); renderDocs(); renderScope(); };
 function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); if(id==='voice-cache')renderVoiceCache(); }
 $$('.nav-item').forEach(n=>n.onclick=()=>page(n.dataset.page));
 function show(id){ $(id).classList.add('show'); } function hide(id){ $(id).classList.remove('show'); }
@@ -112,13 +117,14 @@ async function speak(){
     }else{playing=false;$('#togglePlay').textContent='▶'}
   };
   try{
-    const script=lessonScript(lesson), key=audioKey(script);
+    const script=lessonScript(lesson), key=audioKey(`${lesson.documentId || 'basic'}:${script}`);
     let cached=await getCachedAudio(key), audioBlob=cached?.blob;
     if(!audioBlob){
       const response=await fetch('/api/speech',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:script})});
       if(!response.ok)throw new Error('TTS unavailable');
       audioBlob=await response.blob();
-      try { await saveCachedAudio({key,blob:audioBlob,title:lesson.title,meaning:lesson.meaning,mode:`${intensiveListening?'강화':'일반'} 듣기 · 구성 ${audioPattern+1}`,savedAt:Date.now()}); } catch { /* Audio still plays if this device's storage is full. */ }
+      const source=docs.find(doc=>doc.id===lesson.documentId);
+      try { await saveCachedAudio({key,blob:audioBlob,title:lesson.title,meaning:lesson.meaning,mode:`${intensiveListening?'강화':'일반'} 듣기 · 구성 ${audioPattern+1}`,documentId:lesson.documentId || 'basic',documentName:source?.name || '기본 학습',savedAt:Date.now()}); } catch { /* Audio still plays if this device's storage is full. */ }
       if ($('#voice-cache').classList.contains('active-page')) renderVoiceCache();
     }
     if(run!==playbackId || !playing)return;
@@ -127,7 +133,7 @@ async function speak(){
     browserLessonAudio(lesson,moveNext);
   }
 }
-function stopSpeech(){playbackId++;speechSynthesis.cancel();if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}}
+function stopSpeech(){playbackId++;cachedPlaybackId++;speechSynthesis.cancel();if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}}
 function movePlayer(step){ stopSpeech(); if(playQueue.length) queueIndex=(queueIndex+step+playQueue.length)%playQueue.length; else current=(current+step+lessons.length)%lessons.length; updatePlayer(); if(playing)speak(); }
 $('#togglePlay').onclick=()=>{if(playing){stopSpeech();playing=false;$('#togglePlay').textContent='▶'}else speak()}; $('#next').onclick=()=>movePlayer(1);$('#prev').onclick=()=>movePlayer(-1);$('#autoToggle').onclick=e=>{auto=!auto;e.currentTarget.classList.toggle('on',auto)};
 $('#intensiveToggle').onclick=e=>{intensiveListening=!intensiveListening;e.currentTarget.classList.toggle('on',intensiveListening);$('#intensiveLabel').textContent=intensiveListening?'강화 듣기 · 설명 포함':'일반 듣기 · 뜻과 예문'};
