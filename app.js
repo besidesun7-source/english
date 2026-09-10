@@ -60,7 +60,7 @@ function shuffle(items){ const copy=[...items]; for(let i=copy.length-1;i>0;i--)
 function refreshLessons(){ if(playing){ stopSpeech(); playing=false; $('#togglePlay').textContent='▶'; } playQueue=[]; sessionEndsAt=0; const enabled = new Set(docs.filter(d=>d.enabled).map(d=>d.id)); lessons = lessonBank.filter(lesson => enabled.has(lesson.documentId)); current = 0; renderSources(); renderLessons(); }
 function renderSources(){ $('#sourceChips').innerHTML = docs.filter(d=>d.enabled).map(d=>`<span class="source-chip"><i style="background:${d.color}"></i>${d.name}<button onclick="toggleDoc('${d.id}')">×</button></span>`).join('') || '<span class="muted">문서를 선택해주세요</span>'; $('#lessonCount').textContent = lessons.length; }
 function renderLessons(){ $('#lessonCards').innerHTML = lessons.length ? lessons.map((l,i)=>`<button class="lesson-card" onclick="openPlayer(${i})"><span class="lesson-num">${l.n}</span><div><span class="tag">${l.tag}</span><b>${l.title}</b><small>${l.meaning}</small></div><span class="speak">◖</span></button>`).join('') : '<p class="empty-lessons">선택한 문서에서 아직 학습할 표현을 찾지 못했어요.</p>'; }
-function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small class="${d.analyzing?'analysis-state':''}">${d.analyzing?'✦ GPT 분석 중…':`${d.date} · 핵심 표현 ${d.count}개`}</small></div><button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button><button class="dots">•••</button></div>`).join(''); }
+function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small class="${d.analyzing?'analysis-state':''}">${d.analyzing?'✦ GPT 분석 중…':`${d.date} · 핵심 표현 ${d.count}개`}</small></div>${d.analyzing?`<button class="cancel-analysis" onclick="cancelAnalysis('${d.id}')">취소·삭제</button>`:`<button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button>`}<button class="dots">•••</button></div>`).join(''); }
 function renderScope(){ $('#scopeOptions').innerHTML=docs.map(d=>`<label class="scope-option"><input type="checkbox" data-id="${d.id}" ${d.enabled?'checked':''}/><span class="check"></span><span><b>${d.name}</b><small>핵심 표현 ${d.count}개</small></span></label>`).join(''); }
 window.toggleDoc=id=>{ const d=docs.find(x=>x.id===id); d.enabled=!d.enabled; save(); refreshLessons(); renderDocs();renderScope(); };
 function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); if(id==='voice-cache')renderVoiceCache(); }
@@ -233,9 +233,11 @@ function setAiLessons(cards, documentId) {
   lessonBank = lessonBank.filter(lesson => lesson.documentId !== documentId).concat(clean);
   save(); refreshLessons();
 }
-async function analyzeDocument(text, name) {
+const analysisControllers=new Map(), cancelledAnalyses=new Set();
+async function analyzeDocument(text, name, documentId) {
   const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),90000);
-  let response; try { response = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text,name}), signal:controller.signal }); } catch(error) { if(error.name==='AbortError') throw new Error('분석 시간이 길어져 중단됐어요. 다시 시도해주세요.'); throw error; } finally { clearTimeout(timeout); }
+  analysisControllers.set(documentId,controller);
+  let response; try { response = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text,name}), signal:controller.signal }); } catch(error) { if(error.name==='AbortError') throw new Error('분석이 취소됐어요.'); throw error; } finally { clearTimeout(timeout); analysisControllers.delete(documentId); }
   if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || 'AI 분석 오류');
   const result = await response.json();
   return result.lessons;
@@ -248,6 +250,13 @@ function setAnalysisStatus(name, active){
   if(active){ $('#analysisTitle').textContent=`GPT가 “${name}”을 분석하고 있어요`; }
   if(!analysisJobs){ clearInterval(analysisTicker); analysisStartedAt=0; }
 }
+window.cancelAnalysis=id=>{
+  const doc=docs.find(item=>item.id===id); if(!doc)return;
+  cancelledAnalyses.add(id); analysisControllers.get(id)?.abort();
+  docs=docs.filter(item=>item.id!==id); lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id);
+  setAnalysisStatus(doc.name,false); save(); refreshLessons(); renderDocs();
+};
+$('#cancelAllAnalyses').onclick=()=>docs.filter(doc=>doc.analyzing).forEach(doc=>window.cancelAnalysis(doc.id));
 async function addFiles(files){
   for (const f of files) {
     if (!/\.(pdf|docx)$/i.test(f.name)) continue;
@@ -260,17 +269,18 @@ async function addFiles(files){
     try {
       const text = await readDocument(f);
       docs.find(d => d.id === id).sourceText = text.slice(0,1500000);
-      try { setAiLessons(await analyzeDocument(text, f.name), id); }
-      catch (aiError) { makeLessons(text, id); }
+      if(cancelledAnalyses.has(id)) throw new Error('분석이 취소됐어요.');
+      try { setAiLessons(await analyzeDocument(text, f.name, id), id); }
+      catch (aiError) { if(cancelledAnalyses.has(id)) throw aiError; makeLessons(text, id); }
       const doc = docs.find(d => d.id === id);
       doc.date = new Date().toLocaleDateString('ko-KR').replace(/\. /g,'.').replace(/\.$/,'');
       doc.count = lessonBank.filter(lesson => lesson.documentId === id).length;
     } catch (error) {
       const doc = docs.find(d => d.id === id);
-      doc.date = error.message || '읽을 수 없는 문서';
+      if(doc) doc.date = error.message || '읽을 수 없는 문서';
     } finally {
-      const doc = docs.find(d => d.id === id); if(doc) doc.analyzing=false;
-      setAnalysisStatus(f.name,false); renderDocs();
+      const wasCancelled=cancelledAnalyses.delete(id), doc=docs.find(d => d.id === id);
+      if(!wasCancelled){ if(doc) doc.analyzing=false; setAnalysisStatus(f.name,false); renderDocs(); }
     }
   }
   save(); renderSources(); renderDocs();
