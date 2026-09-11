@@ -1,6 +1,11 @@
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 const lessonSchema = { type:'object', additionalProperties:false, properties:{ lessons:{ type:'array', items:{ type:'object', additionalProperties:false, properties:{ title:{type:'string'}, meaning:{type:'string'}, sentence:{type:'string'}, translation:{type:'string'}, explanation:{type:'string'}, tag:{type:'string'} }, required:['title','meaning','sentence','translation','explanation','tag'] } } }, required:['lessons'] };
-const analysisInstructions = `You convert a Korean learner's English study document into high-quality listening and speaking study cards. Read the entire source, regardless of its layout. For a substantial study document, return exactly 77 distinct, useful cards. If the source is genuinely too short, return the maximum number of source-grounded cards possible. Cover core expressions, complete sentences, grammar patterns, substitutions, and useful variations from the source so the cards are diverse rather than repetitive. Each card must have: a useful English expression as title, its concise natural Korean meaning, one complete English sentence from the source (or a faithful example based directly on it), a natural Korean translation of that sentence, a very short Korean explanation of grammar/usage, and a tag. Never use placeholder text. Do not pair an English sentence with an unrelated Korean translation. Prefer the document's own translations and expressions. Remove repetition, headings, page numbers, and broken text. Output only the requested JSON.`;
+const analysisInstructions = `You convert a Korean learner's English study document into high-quality listening and speaking study cards. Read the entire source, regardless of its layout. Cover core expressions, complete sentences, grammar patterns, substitutions, and useful practice variations from the source so the cards are diverse rather than repetitive. When a target number is supplied, return exactly that many distinct cards. Do not return fewer simply because the document has only a few headings: derive faithful, useful sentence variations from every source section. Each card must have: a useful English expression as title, its concise natural Korean meaning, one complete English sentence from the source (or a faithful example based directly on it), a natural Korean translation of that sentence, a very short Korean explanation of grammar/usage, and a tag. Never use placeholder text. Do not pair an English sentence with an unrelated Korean translation. Prefer the document's own translations and expressions. Remove repetition, headings, page numbers, and broken text. Output only the requested JSON.`;
+const studyCardTarget = source => {
+  const compact=source.replace(/\s/g,'').length;
+  const sentenceCount=(source.match(/[A-Za-z][A-Za-z ,;:'’"()\-]{5,}[.!?]/g) || []).length;
+  return Math.max(30, Math.min(100, Math.max(Math.round(compact / 75), sentenceCount * 2)));
+};
 const outputText = data => data.output_text || (data.output || []).flatMap(item => item.content || []).map(content => content.text || '').join('');
 const libraryId = request => request.headers.get('x-doo-library-id') || '';
 const validLibraryId = value => /^[a-f0-9]{64}$/.test(value);
@@ -25,10 +30,10 @@ async function saveLibrary(request, env) {
 async function analyze(request, env) {
   if (!env.OPENAI_API_KEY) return json({ error: 'OPENAI_API_KEY가 설정되지 않았습니다.' }, 503);
   try {
-    const { text, name } = await request.json();
+    const { text, name } = await request.json(), source=String(text || '').slice(0,140000), target=studyCardTarget(String(text || '').slice(0,140000));
     const response = await fetch('https://api.openai.com/v1/responses', {
       method:'POST', headers:{ Authorization:`Bearer ${env.OPENAI_API_KEY}`, 'content-type':'application/json' },
-      body:JSON.stringify({ model:'gpt-4o-mini', store:false, instructions:analysisInstructions, input:`Document name: ${name || 'study document'}\n\nSOURCE:\n${String(text || '').slice(0,140000)}`, text:{format:{type:'json_schema',name:'english_study_cards',strict:true,schema:lessonSchema}}, max_output_tokens:9000 })
+      body:JSON.stringify({ model:'gpt-4o-mini', store:false, instructions:analysisInstructions, input:`Document name: ${name || 'study document'}\nRequired card count: exactly ${target} (chosen from document length; minimum 30, maximum 100).\n\nSOURCE:\n${source}`, text:{format:{type:'json_schema',name:'english_study_cards',strict:true,schema:lessonSchema}}, max_output_tokens:14000 })
     });
     if (!response.ok) return new Response(response.body, {status:response.status,headers:{'content-type':'application/json'}});
     return json(JSON.parse(outputText(await response.json())));

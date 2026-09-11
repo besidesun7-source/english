@@ -12,7 +12,12 @@ const lessonSchema = {
     title:{type:'string'}, meaning:{type:'string'}, sentence:{type:'string'}, translation:{type:'string'}, explanation:{type:'string'}, tag:{type:'string'}
   }, required:['title','meaning','sentence','translation','explanation','tag'] } } }, required:['lessons']
 };
-const analysisInstructions = `You convert a Korean learner's English study document into high-quality listening and speaking study cards. Read the entire source, regardless of its layout. For a substantial study document, return exactly 77 distinct, useful cards. If the source is genuinely too short, return the maximum number of source-grounded cards possible. Cover core expressions, complete sentences, grammar patterns, substitutions, and useful variations from the source so the cards are diverse rather than repetitive. Each card must have: a useful English expression as title, its concise natural Korean meaning, one complete English sentence from the source (or a faithful example based directly on it), a natural Korean translation of that sentence, a very short Korean explanation of grammar/usage, and a tag. Never use placeholder text. Do not pair an English sentence with an unrelated Korean translation. Prefer the document's own translations and expressions. Remove repetition, headings, page numbers, and broken text. Output only the requested JSON.`;
+const analysisInstructions = `You convert a Korean learner's English study document into high-quality listening and speaking study cards. Read the entire source, regardless of its layout. Cover core expressions, complete sentences, grammar patterns, substitutions, and useful practice variations from the source so the cards are diverse rather than repetitive. When a target number is supplied, return exactly that many distinct cards. Do not return fewer simply because the document has only a few headings: derive faithful, useful sentence variations from every source section. Each card must have: a useful English expression as title, its concise natural Korean meaning, one complete English sentence from the source (or a faithful example based directly on it), a natural Korean translation of that sentence, a very short Korean explanation of grammar/usage, and a tag. Never use placeholder text. Do not pair an English sentence with an unrelated Korean translation. Prefer the document's own translations and expressions. Remove repetition, headings, page numbers, and broken text. Output only the requested JSON.`;
+const studyCardTarget = source => {
+  const compact=source.replace(/\s/g,'').length;
+  const sentenceCount=(source.match(/[A-Za-z][A-Za-z ,;:'’"()\-]{5,}[.!?]/g) || []).length;
+  return Math.max(30, Math.min(100, Math.max(Math.round(compact / 75), sentenceCount * 2)));
+};
 function outputText(data) { return data.output_text || (data.output || []).flatMap(item => item.content || []).map(content => content.text || '').join(''); }
 createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/api/analyze') {
@@ -20,11 +25,11 @@ createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
     try {
       const { text, name } = JSON.parse(raw);
-      const source = String(text || '').slice(0, 140000);
+      const source = String(text || '').slice(0, 140000), target = studyCardTarget(String(text || '').slice(0, 140000));
       const api = await fetch('https://api.openai.com/v1/responses', { method:'POST', headers:{Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'Content-Type':'application/json'}, body:JSON.stringify({
         model:'gpt-4o-mini', store:false, instructions:analysisInstructions,
-        input:`Document name: ${name || 'study document'}\n\nSOURCE:\n${source}`,
-        text:{format:{type:'json_schema',name:'english_study_cards',strict:true,schema:lessonSchema}}, max_output_tokens:9000
+        input:`Document name: ${name || 'study document'}\nRequired card count: exactly ${target} (chosen from document length; minimum 30, maximum 100).\n\nSOURCE:\n${source}`,
+        text:{format:{type:'json_schema',name:'english_study_cards',strict:true,schema:lessonSchema}}, max_output_tokens:14000
       }) });
       if (!api.ok) { res.writeHead(api.status, {'Content-Type':'application/json'}); return res.end(await api.text()); }
       const data = await api.json(); const result = JSON.parse(outputText(data));
