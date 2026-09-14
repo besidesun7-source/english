@@ -137,10 +137,11 @@ async function speak(){
       if ($('#voice-cache').classList.contains('active-page')) renderVoiceCache();
     }
     if(run!==playbackId || !playing)return;
-    const audio=new Audio(URL.createObjectURL(audioBlob)); ttsAudio=audio; let terminal=false;
-    const finish=()=>{ if(terminal || run!==playbackId)return; terminal=true; URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; moveNext(); };
-    const fallback=()=>{ if(terminal || run!==playbackId)return; terminal=true; URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; browserLessonAudio(lesson,()=>{ if(run===playbackId && playing)moveNext(); }); };
-    audio.onended=finish; audio.onerror=fallback; audio.playbackRate=playbackSpeed;
+    const audio=new Audio(URL.createObjectURL(audioBlob)); ttsAudio=audio; let terminal=false, watchdog;
+    const finish=()=>{ if(terminal || run!==playbackId)return; terminal=true; clearTimeout(watchdog); URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; setTimeout(moveNext,180); };
+    const fallback=()=>{ if(terminal || run!==playbackId)return; terminal=true; clearTimeout(watchdog); URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; browserLessonAudio(lesson,()=>{ if(run===playbackId && playing)setTimeout(moveNext,180); }); };
+    const armWatchdog=()=>{ if(!Number.isFinite(audio.duration) || audio.duration<=0)return; clearTimeout(watchdog); watchdog=setTimeout(finish,Math.ceil((audio.duration/audio.playbackRate)*1000)+1200); };
+    audio.onended=finish; audio.onerror=fallback; audio.onloadedmetadata=armWatchdog; audio.ontimeupdate=()=>{ if(audio.duration && audio.currentTime>=audio.duration-.12)finish(); }; audio.playbackRate=playbackSpeed;
     audio.play().catch(fallback);
   }catch{
     browserLessonAudio(lesson,moveNext);
