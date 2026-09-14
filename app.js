@@ -16,6 +16,10 @@ let playing = false, current = 0, auto = true, timer, ttsAudio, playbackId = 0, 
 let playQueue = [], queueIndex = 0, sessionEndsAt = 0, audioPattern = 0;
 const SESSION_MINUTES = 30;
 const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
+let audioContext, audioSource;
+async function unlockAudio(){ const Context=window.AudioContext || window.webkitAudioContext; if(!Context)return null; audioContext ||= new Context(); if(audioContext.state==='suspended')await audioContext.resume(); return audioContext; }
+function setPlayerLoading(active, message='음성을 준비하고 있어요…'){ const loading=$('#playerLoading'); if(!loading)return; loading.hidden=!active; if(active)loading.lastChild.textContent=` ${message}`; }
+async function playTtsBuffer(blob, run, finish){ const context=await unlockAudio(); if(!context)throw new Error('audio unavailable'); const buffer=await context.decodeAudioData(await blob.arrayBuffer()); if(run!==playbackId || !playing)return; const source=context.createBufferSource(); source.buffer=buffer; source.playbackRate.value=playbackSpeed; source.connect(context.destination); audioSource=source; source.onended=()=>{ if(audioSource===source)audioSource=null; finish(); }; source.start(); }
 let librarySyncTimer, vaultKey, vaultId;
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const bytesToBase64 = bytes => { let text=''; for(let start=0;start<bytes.length;start+=0x8000) text+=String.fromCharCode(...bytes.subarray(start,start+0x8000)); return btoa(text); };
@@ -83,13 +87,13 @@ function closeModal(modal){
   modal.classList.remove('show');
 }
 $$('.close').forEach(b=>b.onclick=()=>closeModal(b.closest('.modal')));
-function setPlaybackSpeed(speed){ playbackSpeed=Number(speed); localStorage.setItem('doo-note-speed',String(playbackSpeed)); if(ttsAudio)ttsAudio.playbackRate=playbackSpeed; $$('.speed-choice').forEach(button=>button.classList.toggle('active',Number(button.dataset.speed)===playbackSpeed)); }
+function setPlaybackSpeed(speed){ playbackSpeed=Number(speed); localStorage.setItem('doo-note-speed',String(playbackSpeed)); if(ttsAudio)ttsAudio.playbackRate=playbackSpeed; if(audioSource)audioSource.playbackRate.value=playbackSpeed; $$('.speed-choice').forEach(button=>button.classList.toggle('active',Number(button.dataset.speed)===playbackSpeed)); }
 $$('.speed-choice').forEach(button=>button.onclick=()=>setPlaybackSpeed(button.dataset.speed));
 setPlaybackSpeed(playbackSpeed);
 $('#openScope').onclick=()=>{renderScope();show('#scopeModal')}; $('#saveScope').onclick=()=>{ $$('#scopeOptions input').forEach(x=>docs.find(d=>d.id===x.dataset.id).enabled=x.checked); save(); refreshLessons(); renderDocs();hide('#scopeModal'); };
 function updatePlayer(){ const l=activeLesson(); if(!l)return; const position=playQueue.length ? queueIndex+1 : current+1; const total=playQueue.length || lessons.length; $('#playerTitle').textContent=l.title;$('#playerMeaning').textContent=l.meaning;$('#playerSentence').textContent=l.sentence;$('.now-playing span').textContent=String(position).padStart(2,'0'); $('#progressFill').style.width=`${(position/total)*100}%`; const info=$('#sessionInfo'); if(info) info.textContent=sessionEndsAt ? `새로운 조합으로 30분 듣는 중 · ${Math.max(0, Math.ceil((sessionEndsAt-Date.now())/60000))}분 남음` : '표현을 눌러 미리 듣는 중'; }
-function startListening(){ if(!lessons.length)return; playQueue=shuffle(lessons); queueIndex=0; audioPattern=Math.floor(Math.random()*3); sessionEndsAt=Date.now()+SESSION_MINUTES*60*1000; updatePlayer(); show('#playerModal'); speak(); }
-window.openPlayer=i=>{if(!lessons.length)return;playQueue=[];sessionEndsAt=0;current=i;updatePlayer();show('#playerModal');}; $('.start-listen').onclick=startListening; $$('.mode-card').forEach(x=>x.onclick=()=>x.dataset.mode==='listen'?startListening():openChat());
+function startListening(){ if(!lessons.length)return; unlockAudio(); playQueue=shuffle(lessons); queueIndex=0; audioPattern=Math.floor(Math.random()*3); sessionEndsAt=Date.now()+SESSION_MINUTES*60*1000; updatePlayer(); show('#playerModal'); speak(); }
+window.openPlayer=i=>{if(!lessons.length)return;unlockAudio();playQueue=[];sessionEndsAt=0;current=i;updatePlayer();show('#playerModal');}; $('.start-listen').onclick=startListening; $$('.mode-card').forEach(x=>x.onclick=()=>x.dataset.mode==='listen'?startListening():openChat());
 let intensiveListening = false;
 function lessonScript(lesson){
   const scripts = [
@@ -116,6 +120,7 @@ async function speak(){
   if(!lesson) return;
   const run = ++playbackId;
   speechSynthesis.cancel(); playing=true; $('#togglePlay').textContent='❚❚';
+  setPlayerLoading(true);
   const moveNext=()=>{
     if (run !== playbackId || !playing) return;
     if(sessionEndsAt && Date.now() >= sessionEndsAt){ playing=false; sessionEndsAt=0; $('#togglePlay').textContent='▶'; const info=$('#sessionInfo'); if(info) info.textContent='30분 듣기를 마쳤어요. 다시 시작하면 새 조합으로 들려드려요.'; return; }
@@ -137,17 +142,15 @@ async function speak(){
       if ($('#voice-cache').classList.contains('active-page')) renderVoiceCache();
     }
     if(run!==playbackId || !playing)return;
-    const audio=new Audio(URL.createObjectURL(audioBlob)); ttsAudio=audio; let terminal=false, watchdog;
-    const finish=()=>{ if(terminal || run!==playbackId)return; terminal=true; clearTimeout(watchdog); URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; setTimeout(moveNext,180); };
-    const fallback=()=>{ if(terminal || run!==playbackId)return; terminal=true; clearTimeout(watchdog); URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; browserLessonAudio(lesson,()=>{ if(run===playbackId && playing)setTimeout(moveNext,180); }); };
-    const armWatchdog=()=>{ if(!Number.isFinite(audio.duration) || audio.duration<=0)return; clearTimeout(watchdog); watchdog=setTimeout(finish,Math.ceil((audio.duration/audio.playbackRate)*1000)+1200); };
-    audio.onended=finish; audio.onerror=fallback; audio.onloadedmetadata=armWatchdog; audio.ontimeupdate=()=>{ if(audio.duration && audio.currentTime>=audio.duration-.12)finish(); }; audio.playbackRate=playbackSpeed;
-    audio.play().catch(fallback);
+    const finish=()=>{ setPlayerLoading(false); setTimeout(moveNext,180); };
+    try { await playTtsBuffer(audioBlob,run,finish); setPlayerLoading(false); }
+    catch { setPlayerLoading(false); browserLessonAudio(lesson,()=>{ if(run===playbackId && playing)setTimeout(moveNext,180); }); }
   }catch{
+    setPlayerLoading(false);
     browserLessonAudio(lesson,moveNext);
   }
 }
-function stopSpeech(){playbackId++;cachedPlaybackId++;speechSynthesis.cancel();if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}}
+function stopSpeech(){playbackId++;cachedPlaybackId++;speechSynthesis.cancel();if(audioSource){try{audioSource.stop()}catch{}audioSource=null}if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}setPlayerLoading(false)}
 function movePlayer(step){ stopSpeech(); if(playQueue.length) queueIndex=(queueIndex+step+playQueue.length)%playQueue.length; else current=(current+step+lessons.length)%lessons.length; updatePlayer(); if(playing)speak(); }
 $('#togglePlay').onclick=()=>{if(playing){stopSpeech();playing=false;$('#togglePlay').textContent='▶'}else speak()}; $('#next').onclick=()=>movePlayer(1);$('#prev').onclick=()=>movePlayer(-1);$('#autoToggle').onclick=e=>{auto=!auto;e.currentTarget.classList.toggle('on',auto)};
 $('#cacheTogglePlay').onclick=()=>{ if(cachePlaying){stopCachedPlayer();$('#cacheTogglePlay').textContent='▶';}else playCachedTrack(); };
