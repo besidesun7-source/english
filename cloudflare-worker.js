@@ -40,6 +40,26 @@ async function analyze(request, env) {
   } catch { return json({ error:'AI 학습 자료를 만들 수 없습니다.' },500); }
 }
 
+const analysisJobKey = id => `analysis-job:${id}`;
+async function createAnalysisResult(text, name, env) {
+  const source=String(text || '').slice(0,140000), target=studyCardTarget(source);
+  const response=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${env.OPENAI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:'gpt-4o-mini',store:false,instructions:analysisInstructions,input:`Document name: ${name || 'study document'}\nRequired card count: exactly ${target} (chosen from document length; minimum 30, maximum 100).\n\nSOURCE:\n${source}`,text:{format:{type:'json_schema',name:'english_study_cards',strict:true,schema:lessonSchema}},max_output_tokens:14000})});
+  if(!response.ok)throw new Error('AI 분석을 시작하지 못했어요.');
+  return JSON.parse(outputText(await response.json())).lessons;
+}
+async function runAnalysisJob(id, text, name, env){
+  await env.DOO_NOTE_LIBRARY.put(analysisJobKey(id),JSON.stringify({status:'processing'}),{expirationTtl:86400});
+  try { const lessons=await createAnalysisResult(text,name,env); const current=JSON.parse(await env.DOO_NOTE_LIBRARY.get(analysisJobKey(id)) || '{}'); if(current.status!=='cancelled')await env.DOO_NOTE_LIBRARY.put(analysisJobKey(id),JSON.stringify({status:'completed',lessons}),{expirationTtl:86400}); }
+  catch(error){ await env.DOO_NOTE_LIBRARY.put(analysisJobKey(id),JSON.stringify({status:'failed',error:error.message || '분석하지 못했어요.'}),{expirationTtl:86400}); }
+}
+async function startAnalysisJob(request,env,ctx){
+  if(!env.OPENAI_API_KEY)return json({error:'OPENAI_API_KEY가 설정되지 않았습니다.'},503);
+  const {text,name}=await request.json(); if(!text)return json({error:'문서 내용이 없습니다.'},400);
+  const id=crypto.randomUUID(); await env.DOO_NOTE_LIBRARY.put(analysisJobKey(id),JSON.stringify({status:'queued'}),{expirationTtl:86400}); ctx.waitUntil(runAnalysisJob(id,text,name,env)); return json({jobId:id,status:'queued'});
+}
+async function getAnalysisJob(request,env){ const id=new URL(request.url).searchParams.get('id'); if(!id)return json({error:'작업 정보가 없습니다.'},400); const job=await env.DOO_NOTE_LIBRARY.get(analysisJobKey(id)); return job ? new Response(job,{headers:{'content-type':'application/json'}}) : json({error:'작업을 찾을 수 없습니다.'},404); }
+async function cancelAnalysisJob(request,env){ const {jobId}=await request.json(); if(!jobId)return json({error:'작업 정보가 없습니다.'},400); await env.DOO_NOTE_LIBRARY.put(analysisJobKey(jobId),JSON.stringify({status:'cancelled'}),{expirationTtl:3600}); return json({cancelled:true}); }
+
 async function speech(request, env) {
   if (!env.OPENAI_API_KEY) return json({ error: 'OPENAI_API_KEY가 설정되지 않았습니다.' }, 503);
   const { text } = await request.json();
@@ -74,10 +94,13 @@ async function realtime(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const { pathname } = new URL(request.url);
     if (pathname === '/api/library' && request.method === 'GET') return getLibrary(request, env);
     if (pathname === '/api/library' && request.method === 'POST') return saveLibrary(request, env);
+    if (pathname === '/api/analyze/start' && request.method === 'POST') return startAnalysisJob(request, env, ctx);
+    if (pathname === '/api/analyze/status' && request.method === 'GET') return getAnalysisJob(request, env);
+    if (pathname === '/api/analyze/cancel' && request.method === 'POST') return cancelAnalysisJob(request, env);
     if (request.method === 'POST' && pathname === '/api/analyze') return analyze(request, env);
     if (request.method === 'POST' && pathname === '/api/speech') return speech(request, env);
     if (request.method === 'POST' && pathname === '/api/realtime') return realtime(request, env);

@@ -12,6 +12,7 @@ let lessons = [
 const readSaved = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; } };
 let lessonBank = readSaved('lingo-lesson-bank', lessons.map(lesson => ({ ...lesson, documentId: 'hong' })));
 let docs = readSaved('lingo-docs', seedDocuments);
+let studyProgress = readSaved('doo-note-study-progress', {});
 let playing = false, current = 0, auto = true, timer, ttsAudio, playbackId = 0, playbackSpeed = Number(localStorage.getItem('doo-note-speed')) || 1;
 let playQueue = [], queueIndex = 0, sessionEndsAt = 0, audioPattern = 0;
 const SESSION_MINUTES = 30;
@@ -34,7 +35,7 @@ async function encryptLibrary(data){ const iv=crypto.getRandomValues(new Uint8Ar
 async function decryptLibrary(payload){ const data=JSON.parse(payload), plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:base64ToBytes(data.iv)},vaultKey,base64ToBytes(data.cipher)); return JSON.parse(decoder.decode(plain)); }
 async function syncLibrary(){
   if(!vaultKey || !vaultId)return;
-  try { const payload=await encryptLibrary({docs,lessonBank}); const response=await fetch('/api/library', {method:'POST',headers:{'Content-Type':'application/json','x-doo-library-id':vaultId},body:JSON.stringify({payload})}); if(!response.ok)throw new Error('sync failed'); updateSyncUi('서버 보관함에 안전하게 동기화됐어요.'); } catch { updateSyncUi('동기화하지 못했어요. 연결 상태를 확인해 주세요.'); }
+  try { const payload=await encryptLibrary({docs,lessonBank,studyProgress}); const response=await fetch('/api/library', {method:'POST',headers:{'Content-Type':'application/json','x-doo-library-id':vaultId},body:JSON.stringify({payload})}); if(!response.ok)throw new Error('sync failed'); updateSyncUi('서버 보관함에 안전하게 동기화됐어요.'); } catch { updateSyncUi('동기화하지 못했어요. 연결 상태를 확인해 주세요.'); }
 }
 function queueLibrarySync(){ if(!vaultKey)return; clearTimeout(librarySyncTimer); librarySyncTimer=setTimeout(syncLibrary,700); }
 function updateSyncUi(message){ const button=$('#openSync'), notice=$('#syncNotice'); if(button)button.textContent=vaultKey?'서버 보관함 동기화됨':'서버 보관함 연결'; if(notice)notice.textContent=message || (vaultKey?'문서 텍스트와 GPT 분석 결과가 암호화되어 서버 보관함에 자동 동기화됩니다.':'서버 보관함을 연결하면 문서 텍스트와 GPT 분석 결과가 암호화되어 다른 기기에도 동기화됩니다.'); }
@@ -42,7 +43,7 @@ async function restoreLibrary(){
   if(!vaultKey || !vaultId)return;
   const response=await fetch('/api/library',{headers:{'x-doo-library-id':vaultId}}); if(!response.ok)return;
   const remote=await response.json(); if(!remote.payload){ queueLibrarySync(); return; }
-  const library=await decryptLibrary(remote.payload); if(library.docs?.length){ docs=library.docs; lessonBank=library.lessonBank || []; save(); refreshLessons(); renderDocs(); }
+  const library=await decryptLibrary(remote.payload); if(library.docs?.length){ docs=library.docs; lessonBank=library.lessonBank || []; studyProgress=library.studyProgress || {}; save(); refreshLessons(); renderDocs(); }
 }
 const audioDb = new Promise((resolve, reject) => {
   const request = indexedDB.open('doo-note-audio', 1);
@@ -67,18 +68,24 @@ function playCachedTrack(){ const track=cacheQueue[cacheQueueIndex]; if(!track)r
 function openCachedPlayer(tracks,start=0){ stopSpeech(); playing=false; cacheQueue=tracks; cacheQueueIndex=start; updateCachePlayer(); show('#cachePlayerModal'); playCachedTrack(); }
 window.playCachedAudio=async key=>{ const track=await getCachedAudio(key); if(track)openCachedPlayer([track]); };
 window.playCachedGroup=async id=>{ const tracks=(await cachedAudioList()).filter(track=>(track.documentId || 'uncategorized')===id).sort((a,b)=>a.savedAt-b.savedAt); if(tracks.length)openCachedPlayer(tracks); };
-function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); localStorage.setItem('lingo-lesson-bank', JSON.stringify(lessonBank)); queueLibrarySync(); }
+function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); localStorage.setItem('lingo-lesson-bank', JSON.stringify(lessonBank)); localStorage.setItem('doo-note-study-progress',JSON.stringify(studyProgress)); queueLibrarySync(); }
 function activeLesson(){ return playQueue.length ? playQueue[queueIndex] : lessons[current]; }
 function shuffle(items){ const copy=[...items]; for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];} return copy; }
+function lessonKey(lesson){ return `${lesson.documentId || 'basic'}:${lesson.sentence}`; }
+function recordReview(lesson,correct){ const key=lessonKey(lesson), previous=studyProgress[key] || {correct:0,wrong:0,streak:0}; const streak=correct ? previous.streak+1 : 0, days=correct ? (streak>=4?21:streak===3?10:streak===2?4:1) : 1; studyProgress[key]={...previous,correct:previous.correct+(correct?1:0),wrong:previous.wrong+(correct?0:1),streak,lastReviewed:Date.now(),nextReview:Date.now()+days*86400000}; save(); renderProgress(); }
+function dailyLessons(source=lessons){ const now=Date.now(), ranked=[...source].sort((a,b)=>{ const pa=studyProgress[lessonKey(a)],pb=studyProgress[lessonKey(b)]; const score=p=>!p?0:p.nextReview<=now?-4:p.streak>=3?4:p.wrong-p.correct; return score(pa)-score(pb); }); return ranked.slice(0,Math.min(30,ranked.length)); }
+function renderProgress(){ const values=Object.values(studyProgress), learned=values.filter(item=>item.correct).length, due=values.filter(item=>item.nextReview<=Date.now()).length, accuracy=values.length?Math.round(values.reduce((sum,item)=>sum+item.correct,0)/values.reduce((sum,item)=>sum+item.correct+item.wrong,0)*100)||0:0; const stats=$('#progress .stats'); if(stats)stats.innerHTML=`<div><b>${learned}</b><span>학습한 표현</span></div><div><b>${accuracy}%</b><span>정답률</span></div><div><b>${due}</b><span>오늘 복습</span></div>`; }
 function refreshLessons(){ if(playing){ stopSpeech(); playing=false; $('#togglePlay').textContent='▶'; } playQueue=[]; sessionEndsAt=0; const enabled = new Set(docs.filter(d=>d.enabled).map(d=>d.id)); lessons = lessonBank.filter(lesson => enabled.has(lesson.documentId)); current = 0; renderSources(); renderLessons(); }
 function renderSources(){ $('#sourceChips').innerHTML = docs.filter(d=>d.enabled).map(d=>`<span class="source-chip"><i style="background:${d.color}"></i>${d.name}<button onclick="toggleDoc('${d.id}')">×</button></span>`).join('') || '<span class="muted">문서를 선택해주세요</span>'; $('#lessonCount').textContent = lessons.length; }
 function renderLessons(){ $('#lessonCards').innerHTML = lessons.length ? lessons.map((l,i)=>`<button class="lesson-card" onclick="openPlayer(${i})"><span class="lesson-num">${l.n}</span><div><span class="tag">${l.tag}</span><b>${l.title}</b><small>${l.meaning}</small></div><span class="speak">◖</span></button>`).join('') : '<p class="empty-lessons">선택한 문서에서 아직 학습할 표현을 찾지 못했어요.</p>'; }
-function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><b>${d.name}</b><small class="${d.analyzing?'analysis-state':''}">${d.analyzing?'✦ GPT 분석 중…':`${d.date} · 핵심 표현 ${d.count}개`}</small></div>${d.analyzing?`<button class="cancel-analysis" onclick="cancelAnalysis('${d.id}')">취소·삭제</button>`:`<button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button><button class="reanalyze-doc" onclick="reanalyzeDoc('${d.id}')">재분석</button>`}<button class="delete-doc" onclick="deleteDoc('${d.id}')">삭제</button></div>`).join(''); }
+function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><button class="document-title" onclick="openDocument('${d.id}')">${d.name}</button><small class="${d.analyzing?'analysis-state':''}">${d.analyzing?'✦ GPT 분석 중…':`${d.date} · 핵심 표현 ${d.count}개`}</small></div>${d.analyzing?`<button class="cancel-analysis" onclick="cancelAnalysis('${d.id}')">취소·삭제</button>`:`<button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button><button class="reanalyze-doc" onclick="reanalyzeDoc('${d.id}')">재분석</button>`}<button class="delete-doc" onclick="deleteDoc('${d.id}')">삭제</button></div>`).join(''); }
 function renderScope(){ $('#scopeOptions').innerHTML=docs.map(d=>`<label class="scope-option"><input type="checkbox" data-id="${d.id}" ${d.enabled?'checked':''}/><span class="check"></span><span><b>${d.name}</b><small>핵심 표현 ${d.count}개</small></span></label>`).join(''); }
 window.toggleDoc=id=>{ const d=docs.find(x=>x.id===id); d.enabled=!d.enabled; save(); refreshLessons(); renderDocs();renderScope(); };
 window.deleteDoc=id=>{ const doc=docs.find(item=>item.id===id); if(!doc || !confirm(`“${doc.name}” 문서와 분석 결과를 삭제할까요?`))return; analysisControllers.get(id)?.abort(); cancelledAnalyses.add(id); docs=docs.filter(item=>item.id!==id); lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id); save(); refreshLessons(); renderDocs(); renderScope(); };
+window.openDocument=id=>{ const doc=docs.find(item=>item.id===id), cards=lessonBank.filter(item=>item.documentId===id); if(!doc)return; const seen=cards.filter(card=>studyProgress[lessonKey(card)]?.correct).length, due=cards.filter(card=>(studyProgress[lessonKey(card)]?.nextReview || 0)<=Date.now()).length; $('#documentDetail').innerHTML=`<p class="eyebrow">DOCUMENT STUDY</p><h2>${doc.name}</h2><div class="document-stats"><div><b>${cards.length}</b><span>학습 카드</span></div><div><b>${seen}</b><span>학습 완료</span></div><div><b>${due}</b><span>오늘 복습</span></div></div><button class="primary full" onclick="startDocumentListening('${id}')">▶ 이 문서 30분 듣기</button>`; show('#documentDetailModal'); };
+window.startDocumentListening=id=>{ hide('#documentDetailModal'); startListening(lessonBank.filter(item=>item.documentId===id)); };
 window.reanalyzeDoc=async id=>{ const doc=docs.find(item=>item.id===id); if(!doc?.sourceText){ alert('원본 텍스트가 없어 재분석할 수 없어요. 문서를 다시 올려주세요.'); return; } if(!confirm(`“${doc.name}”을 새 기준으로 다시 분석할까요?`))return; doc.analyzing=true; lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id); save(); refreshLessons(); renderDocs(); try { setAiLessons(await analyzeDocument(doc.sourceText,doc.name,id),id); doc.count=lessonBank.filter(lesson=>lesson.documentId===id).length; doc.date=new Date().toLocaleDateString('ko-KR').replace(/\. /g,'.').replace(/\.$/,''); } catch(error) { alert(error.message || '재분석하지 못했어요.'); } finally { doc.analyzing=false; save(); refreshLessons(); renderDocs(); renderScope(); } };
-function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); $('.sidebar').classList.remove('open'); if(id==='voice-cache')renderVoiceCache(); }
+function page(id){ $$('.page').forEach(p=>p.classList.toggle('active-page',p.id===id)); $$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id)); $('.sidebar').classList.remove('open'); if(id==='voice-cache')renderVoiceCache(); if(id==='progress')renderProgress(); }
 $$('.nav-item').forEach(n=>n.onclick=()=>page(n.dataset.page));
 function show(id){ $(id).classList.add('show'); } function hide(id){ $(id).classList.remove('show'); }
 function closeModal(modal){
@@ -92,7 +99,7 @@ $$('.speed-choice').forEach(button=>button.onclick=()=>setPlaybackSpeed(button.d
 setPlaybackSpeed(playbackSpeed);
 $('#openScope').onclick=()=>{renderScope();show('#scopeModal')}; $('#saveScope').onclick=()=>{ $$('#scopeOptions input').forEach(x=>docs.find(d=>d.id===x.dataset.id).enabled=x.checked); save(); refreshLessons(); renderDocs();hide('#scopeModal'); };
 function updatePlayer(){ const l=activeLesson(); if(!l)return; const position=playQueue.length ? queueIndex+1 : current+1; const total=playQueue.length || lessons.length; $('#playerTitle').textContent=l.title;$('#playerMeaning').textContent=l.meaning;$('#playerSentence').textContent=l.sentence;$('.now-playing span').textContent=String(position).padStart(2,'0'); $('#progressFill').style.width=`${(position/total)*100}%`; const info=$('#sessionInfo'); if(info) info.textContent=sessionEndsAt ? `새로운 조합으로 30분 듣는 중 · ${Math.max(0, Math.ceil((sessionEndsAt-Date.now())/60000))}분 남음` : '표현을 눌러 미리 듣는 중'; }
-function startListening(){ if(!lessons.length)return; unlockAudio(); playQueue=shuffle(lessons); queueIndex=0; audioPattern=Math.floor(Math.random()*3); sessionEndsAt=Date.now()+SESSION_MINUTES*60*1000; updatePlayer(); show('#playerModal'); speak(); }
+function startListening(source=lessons){ const today=dailyLessons(source); if(!today.length)return; unlockAudio(); playQueue=shuffle(today); queueIndex=0; audioPattern=Math.floor(Math.random()*3); sessionEndsAt=Date.now()+SESSION_MINUTES*60*1000; updatePlayer(); show('#playerModal'); speak(); }
 window.openPlayer=i=>{if(!lessons.length)return;unlockAudio();playQueue=[];sessionEndsAt=0;current=i;updatePlayer();show('#playerModal');}; $('.start-listen').onclick=startListening; $$('.mode-card').forEach(x=>x.onclick=()=>x.dataset.mode==='listen'?startListening():openChat());
 let intensiveListening = false;
 function lessonScript(lesson){
@@ -166,11 +173,11 @@ function buildQuestions(){
     lesson => ({q:`이 표현을 써서 문장을 완성해보세요.<br/><b>${lesson.title}</b>`,a:lesson.sentence}),
     lesson => ({q:`다음 한국어 뜻에 맞는 문장을 말해볼까요?<br/><b>${lesson.translation || lesson.meaning}</b>`,a:lesson.sentence})
   ];
-  return shuffle(lessons).slice(0, Math.min(15, lessons.length)).map((lesson,index) => patterns[index % patterns.length](lesson));
+  return shuffle(dailyLessons()).slice(0, Math.min(15, lessons.length)).map((lesson,index) => ({...patterns[index % patterns.length](lesson),lesson}));
 }
 function addChat(text,who){$('#chatLog').insertAdjacentHTML('beforeend',`<div class="bubble ${who}">${text}</div>`);$('#chatLog').scrollTop=99999;}
 function openChat(){qIndex=0;questions=buildQuestions();$('#chatLog').innerHTML='';$('#liveStatus').textContent='수업 노트로 대화하고 있어요';$('#startLive').hidden=false;$('#endLive').hidden=true;addChat('이번에는 선택한 문서에서 새로 섞은 문제로 연습해요. 아래 버튼을 누르면 마이크로 실시간 영어 대화를 시작할 수 있어요. 텍스트로 연습해도 좋아요 :)','bot');if(questions.length)addChat(questions[0].q,'bot');show('#chatModal');}
-$('#answerForm').onsubmit=e=>{e.preventDefault();let v=$('#answerInput').value.trim();if(!v)return;addChat(v,'me');$('#answerInput').value='';let q=questions[qIndex];setTimeout(()=>{let correct=v.toLowerCase().replace(/[.?!]/g,'').includes(q.a.toLowerCase().replace(/[.?!]/g,''));addChat(correct?`좋아요! 아주 자연스러워요. ✓`:`좋은 시도예요. 이렇게 말할 수 있어요:<br/><b>${q.a}</b>`,'bot');qIndex++;setTimeout(()=>addChat(qIndex<questions.length?questions[qIndex].q:'오늘 대화는 여기까지예요. 정말 잘했어요! ✦','bot'),400)},350)};
+$('#answerForm').onsubmit=e=>{e.preventDefault();let v=$('#answerInput').value.trim();if(!v)return;addChat(v,'me');$('#answerInput').value='';let q=questions[qIndex];setTimeout(()=>{let correct=v.toLowerCase().replace(/[.?!]/g,'').includes(q.a.toLowerCase().replace(/[.?!]/g,''));recordReview(q.lesson,correct);addChat(correct?`좋아요! 아주 자연스러워요. ✓`:`좋은 시도예요. 이렇게 말할 수 있어요:<br/><b>${q.a}</b>`,'bot');qIndex++;setTimeout(()=>addChat(qIndex<questions.length?questions[qIndex].q:'오늘 대화는 여기까지예요. 정말 잘했어요! ✦','bot'),400)},350)};
 async function startLive(){const button=$('#startLive');button.disabled=true;button.textContent='연결하는 중…';try{liveStream=await navigator.mediaDevices.getUserMedia({audio:true});liveConnection=new RTCPeerConnection();liveAudio=document.createElement('audio');liveAudio.autoplay=true;liveConnection.ontrack=e=>liveAudio.srcObject=e.streams[0];liveConnection.addTrack(liveStream.getAudioTracks()[0]);const channel=liveConnection.createDataChannel('oai-events');channel.onmessage=e=>{const data=JSON.parse(e.data);if(data.type==='conversation.item.input_audio_transcription.completed')addChat(data.transcript,'me');if(data.type==='response.output_audio_transcript.done')addChat(data.transcript,'bot')};const offer=await liveConnection.createOffer();await liveConnection.setLocalDescription(offer);const response=await fetch('/api/realtime',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:offer.sdp,lesson:lessons.map(l=>l.sentence).join(' ')})});if(!response.ok)throw new Error((await response.json()).error||'연결 오류');await liveConnection.setRemoteDescription({type:'answer',sdp:await response.text()});$('#liveStatus').textContent='듣고 있어요 · 자유롭게 영어로 말해보세요';button.hidden=true;$('#endLive').hidden=false;addChat('연결됐어요. 오늘 배운 표현을 써서 편하게 말해보세요!','bot')}catch(error){$('#liveStatus').textContent=error.message||'마이크 또는 연결 오류';button.disabled=false;button.textContent='●  음성 대화 시작'}}
 function endLive(){liveStream?.getTracks().forEach(t=>t.stop());liveConnection?.close();liveAudio?.pause();liveStream=liveConnection=liveAudio=null;$('#liveStatus').textContent='음성 대화가 종료됐어요';$('#startLive').hidden=false;$('#startLive').disabled=false;$('#startLive').textContent='●  음성 대화 시작';$('#endLive').hidden=true}
 $('#startLive').onclick=startLive;$('#endLive').onclick=endLive;$('#chatModal .close').addEventListener('click',endLive);
@@ -262,13 +269,11 @@ function setAiLessons(cards, documentId) {
   save(); refreshLessons();
 }
 const analysisControllers=new Map(), cancelledAnalyses=new Set();
-async function analyzeDocument(text, name, documentId) {
-  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),90000);
-  analysisControllers.set(documentId,controller);
-  let response; try { response = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text,name}), signal:controller.signal }); } catch(error) { if(error.name==='AbortError') throw new Error('분석이 취소됐어요.'); throw error; } finally { clearTimeout(timeout); analysisControllers.delete(documentId); }
-  if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || 'AI 분석 오류');
-  const result = await response.json();
-  return result.lessons;
+async function analyzeDocument(text, name, documentId, onJob) {
+  const response=await fetch('/api/analyze/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,name})}); if(!response.ok)throw new Error((await response.json().catch(()=>({}))).error || 'AI 분석 오류');
+  const {jobId}=await response.json(); analysisControllers.set(documentId,jobId); onJob?.(jobId);
+  for(let attempt=0;attempt<240;attempt++){ await new Promise(resolve=>setTimeout(resolve,1500)); const status=await fetch(`/api/analyze/status?id=${encodeURIComponent(jobId)}`); if(!status.ok)continue; const job=await status.json(); if(job.status==='completed'){analysisControllers.delete(documentId); return job.lessons;} if(job.status==='cancelled')throw new Error('분석이 취소됐어요.'); if(job.status==='failed')throw new Error(job.error || 'AI 분석 오류'); }
+  throw new Error('분석 시간이 오래 걸리고 있어요. 잠시 후 다시 확인해 주세요.');
 }
 let analysisJobs=0, analysisStartedAt=0, analysisTicker;
 function setAnalysisStatus(name, active){
@@ -276,9 +281,10 @@ function setAnalysisStatus(name, active){
   if(!analysisJobs){ clearInterval(analysisTicker); analysisStartedAt=0; }
 }
 function clearAnalysisStatus(){ analysisJobs=0; clearInterval(analysisTicker); analysisStartedAt=0; }
+async function resumeAnalysisJobs(){ docs.filter(doc=>doc.analyzing && doc.analysisJobId).forEach(async doc=>{ for(let attempt=0;attempt<240;attempt++){ await new Promise(resolve=>setTimeout(resolve,1500)); const response=await fetch(`/api/analyze/status?id=${encodeURIComponent(doc.analysisJobId)}`); if(!response.ok)continue; const job=await response.json(); if(job.status==='completed'){setAiLessons(job.lessons,doc.id);doc.count=lessonBank.filter(item=>item.documentId===doc.id).length;doc.analyzing=false;delete doc.analysisJobId;save();renderDocs();break;} if(job.status==='failed' || job.status==='cancelled'){doc.analyzing=false;doc.date=job.error || '분석이 취소됐어요.';delete doc.analysisJobId;save();renderDocs();break;} } }); }
 window.cancelAnalysis=id=>{
   const doc=docs.find(item=>item.id===id); if(!doc)return;
-  cancelledAnalyses.add(id); analysisControllers.get(id)?.abort();
+  cancelledAnalyses.add(id); const jobId=analysisControllers.get(id) || doc.analysisJobId; if(jobId)fetch('/api/analyze/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jobId})});
   docs=docs.filter(item=>item.id!==id); lessonBank=lessonBank.filter(lesson=>lesson.documentId!==id);
   setAnalysisStatus(doc.name,false); save(); refreshLessons(); renderDocs();
 };
@@ -295,7 +301,7 @@ async function addFiles(files){
       const text = await readDocument(f);
       docs.find(d => d.id === id).sourceText = text.slice(0,1500000);
       if(cancelledAnalyses.has(id)) throw new Error('분석이 취소됐어요.');
-      try { setAiLessons(await analyzeDocument(text, f.name, id), id); }
+      try { setAiLessons(await analyzeDocument(text, f.name, id,jobId=>{const doc=docs.find(item=>item.id===id);if(doc){doc.analysisJobId=jobId;save();}}), id); }
       catch (aiError) { if(cancelledAnalyses.has(id)) throw aiError; makeLessons(text, id); }
       const doc = docs.find(d => d.id === id);
       doc.date = new Date().toLocaleDateString('ko-KR').replace(/\. /g,'.').replace(/\.$/,'');
@@ -305,7 +311,7 @@ async function addFiles(files){
       if(doc) doc.date = error.message || '읽을 수 없는 문서';
     } finally {
       const wasCancelled=cancelledAnalyses.delete(id), doc=docs.find(d => d.id === id);
-      if(!wasCancelled){ if(doc) doc.analyzing=false; setAnalysisStatus(f.name,false); renderDocs(); }
+      if(!wasCancelled){ if(doc){doc.analyzing=false;delete doc.analysisJobId;} setAnalysisStatus(f.name,false); renderDocs(); }
     }
   }
   save(); renderSources(); renderDocs();
@@ -313,7 +319,7 @@ async function addFiles(files){
 $('#fileInput').onchange=e=>addFiles(e.target.files); $('#uploadZone').ondragover=e=>{e.preventDefault();$('#uploadZone').classList.add('drag')};$('#uploadZone').ondragleave=()=>$('#uploadZone').classList.remove('drag');$('#uploadZone').ondrop=e=>{e.preventDefault();$('#uploadZone').classList.remove('drag');addFiles(e.dataTransfer.files)};
 $('.mobile-menu').onclick=e=>{ e.stopPropagation(); $('.sidebar').classList.toggle('open'); };
 document.querySelector('main').onclick=()=>$('.sidebar').classList.remove('open');
-refreshLessons();renderDocs();
+refreshLessons();renderDocs();renderProgress();resumeAnalysisJobs();
 $('#syncForm').onsubmit=async e=>{ e.preventDefault(); const password=$('#syncPassword').value; if(!password)return; const button=$('#syncForm button'); button.disabled=true; button.textContent='암호화 보관함 여는 중…'; try { await createVault(password); await restoreLibrary(); updateSyncUi(); hide('#syncModal'); } catch { $('#syncPassword').value=''; $('#syncPassword').placeholder='비밀번호가 맞지 않거나 연결할 수 없어요'; } finally { button.disabled=false; button.textContent='암호화 보관함 연결'; } };
 $('#skipSync').onclick=()=>hide('#syncModal');
 $('#openSync').onclick=()=>{ if(vaultKey){ syncLibrary(); return; } $('#syncPassword').value=''; show('#syncModal'); };

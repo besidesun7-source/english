@@ -18,8 +18,16 @@ const studyCardTarget = source => {
   const sentenceCount=(source.match(/[A-Za-z][A-Za-z ,;:'’"()\-]{5,}[.!?]/g) || []).length;
   return Math.max(30, Math.min(100, Math.max(Math.round(compact / 75), sentenceCount * 2)));
 };
+const localAnalysisJobs = new Map();
 function outputText(data) { return data.output_text || (data.output || []).flatMap(item => item.content || []).map(content => content.text || '').join(''); }
 createServer(async (req, res) => {
+  if (req.method === 'POST' && req.url === '/api/analyze/start') {
+    if (!process.env.OPENAI_API_KEY) { res.writeHead(503, {'Content-Type':'application/json'}); return res.end(JSON.stringify({error:'OPENAI_API_KEY가 설정되지 않았습니다.'})); }
+    let raw=''; for await (const chunk of req) raw+=chunk;
+    try { const {text,name}=JSON.parse(raw), id=crypto.randomUUID(); localAnalysisJobs.set(id,{status:'queued'}); (async()=>{ try { localAnalysisJobs.set(id,{status:'processing'}); const source=String(text||'').slice(0,140000),target=studyCardTarget(source); const api=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-4o-mini',store:false,instructions:analysisInstructions,input:`Document name: ${name || 'study document'}\nRequired card count: exactly ${target} (chosen from document length; minimum 30, maximum 100).\n\nSOURCE:\n${source}`,text:{format:{type:'json_schema',name:'english_study_cards',strict:true,schema:lessonSchema}},max_output_tokens:14000})}); if(!api.ok)throw new Error('AI 분석 오류'); const result=JSON.parse(outputText(await api.json())); if(localAnalysisJobs.get(id)?.status!=='cancelled')localAnalysisJobs.set(id,{status:'completed',lessons:result.lessons}); }catch(error){localAnalysisJobs.set(id,{status:'failed',error:error.message || 'AI 분석 오류'});} })(); res.writeHead(200,{'Content-Type':'application/json'}); return res.end(JSON.stringify({jobId:id,status:'queued'})); } catch { res.writeHead(400,{'Content-Type':'application/json'}); return res.end(JSON.stringify({error:'문서 내용을 읽을 수 없습니다.'})); }
+  }
+  if (req.method === 'GET' && req.url.startsWith('/api/analyze/status')) { const id=new URL(req.url,'http://localhost').searchParams.get('id'); const job=localAnalysisJobs.get(id); res.writeHead(job?200:404,{'Content-Type':'application/json'}); return res.end(JSON.stringify(job || {error:'작업을 찾을 수 없습니다.'})); }
+  if (req.method === 'POST' && req.url === '/api/analyze/cancel') { let raw=''; for await (const chunk of req) raw+=chunk; const {jobId}=JSON.parse(raw); localAnalysisJobs.set(jobId,{status:'cancelled'}); res.writeHead(200,{'Content-Type':'application/json'}); return res.end(JSON.stringify({cancelled:true})); }
   if (req.method === 'POST' && req.url === '/api/analyze') {
     if (!process.env.OPENAI_API_KEY) { res.writeHead(503, {'Content-Type':'application/json'}); return res.end(JSON.stringify({error:'OPENAI_API_KEY가 설정되지 않았습니다.'})); }
     let raw = ''; for await (const chunk of req) raw += chunk;
