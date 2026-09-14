@@ -12,7 +12,7 @@ let lessons = [
 const readSaved = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; } };
 let lessonBank = readSaved('lingo-lesson-bank', lessons.map(lesson => ({ ...lesson, documentId: 'hong' })));
 let docs = readSaved('lingo-docs', seedDocuments);
-let playing = false, current = 0, auto = true, timer, ttsAudio, playbackId = 0;
+let playing = false, current = 0, auto = true, timer, ttsAudio, playbackId = 0, playbackSpeed = Number(localStorage.getItem('doo-note-speed')) || 1;
 let playQueue = [], queueIndex = 0, sessionEndsAt = 0, audioPattern = 0;
 const SESSION_MINUTES = 30;
 const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
@@ -56,9 +56,13 @@ async function renderVoiceCache(){
   const groups=new Map(); tracks.forEach(track=>{const id=track.documentId || 'uncategorized'; if(!groups.has(id))groups.set(id,{name:track.documentName || '이전 보관 음성',tracks:[]}); groups.get(id).tracks.push(track);});
   list.innerHTML=[...groups.entries()].map(([id,group])=>`<section class="voice-cache-group"><div class="voice-cache-group-head"><div><b>${group.name}</b><small>저장된 음성 ${group.tracks.length}개</small></div><button class="voice-cache-play-all" onclick="playCachedGroup('${id}')">▶ 모두 재생</button></div>${group.tracks.map(track=>`<div class="voice-cache-row"><span class="voice-cache-icon">◖</span><div class="voice-cache-copy"><b>${track.title}</b><small>${track.meaning} · ${track.mode}</small></div><button class="voice-cache-play" onclick="playCachedAudio('${track.key}')">▶ 재생</button></div>`).join('')}</section>`).join('');
 }
-let cachedPlaybackId=0;
-window.playCachedAudio=async key=>{ const track=await getCachedAudio(key); if(!track)return; stopSpeech(); playing=false; ttsAudio=new Audio(URL.createObjectURL(track.blob)); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}; await ttsAudio.play(); };
-window.playCachedGroup=async id=>{ const tracks=(await cachedAudioList()).filter(track=>(track.documentId || 'uncategorized')===id).sort((a,b)=>a.savedAt-b.savedAt); if(!tracks.length)return; stopSpeech(); playing=false; const run=cachedPlaybackId; const playNext=index=>{ if(run!==cachedPlaybackId || index>=tracks.length)return; const track=tracks[index]; ttsAudio=new Audio(URL.createObjectURL(track.blob)); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null;playNext(index+1)}; ttsAudio.play().catch(()=>playNext(index+1)); }; playNext(0); };
+let cachedPlaybackId=0, cacheQueue=[], cacheQueueIndex=0, cachePlaying=false, cacheAuto=true;
+function updateCachePlayer(){ const track=cacheQueue[cacheQueueIndex]; if(!track)return; $('#cacheTrackNumber').textContent=String(cacheQueueIndex+1).padStart(2,'0'); $('#cachePlayerTitle').textContent=track.title; $('#cachePlayerMeaning').textContent=track.meaning; $('#cachePlayerSentence').textContent=track.mode || '저장된 학습 음성을 재생합니다.'; $('#cacheSessionInfo').textContent=`${track.documentName || '이전 보관 음성'} · ${cacheQueueIndex+1}/${cacheQueue.length}`; $('#cacheProgressFill').style.width=`${((cacheQueueIndex+1)/cacheQueue.length)*100}%`; }
+function stopCachedPlayer(){ cachedPlaybackId++; cachePlaying=false; if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null} }
+function playCachedTrack(){ const track=cacheQueue[cacheQueueIndex]; if(!track)return; const run=++cachedPlaybackId; cachePlaying=true; $('#cacheTogglePlay').textContent='❚❚'; const audio=new Audio(URL.createObjectURL(track.blob)); ttsAudio=audio; let terminal=false; const finish=()=>{ if(terminal || run!==cachedPlaybackId)return; terminal=true; URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; if(cacheAuto && cacheQueue.length>1){ cacheQueueIndex=(cacheQueueIndex+1)%cacheQueue.length; updateCachePlayer(); playCachedTrack(); } else { cachePlaying=false; $('#cacheTogglePlay').textContent='▶'; } }; audio.onended=finish; audio.onerror=finish; audio.playbackRate=playbackSpeed; audio.play().catch(finish); }
+function openCachedPlayer(tracks,start=0){ stopSpeech(); playing=false; cacheQueue=tracks; cacheQueueIndex=start; updateCachePlayer(); show('#cachePlayerModal'); playCachedTrack(); }
+window.playCachedAudio=async key=>{ const track=await getCachedAudio(key); if(track)openCachedPlayer([track]); };
+window.playCachedGroup=async id=>{ const tracks=(await cachedAudioList()).filter(track=>(track.documentId || 'uncategorized')===id).sort((a,b)=>a.savedAt-b.savedAt); if(tracks.length)openCachedPlayer(tracks); };
 function save(){ localStorage.setItem('lingo-docs', JSON.stringify(docs)); localStorage.setItem('lingo-lesson-bank', JSON.stringify(lessonBank)); queueLibrarySync(); }
 function activeLesson(){ return playQueue.length ? playQueue[queueIndex] : lessons[current]; }
 function shuffle(items){ const copy=[...items]; for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]];} return copy; }
@@ -75,9 +79,13 @@ $$('.nav-item').forEach(n=>n.onclick=()=>page(n.dataset.page));
 function show(id){ $(id).classList.add('show'); } function hide(id){ $(id).classList.remove('show'); }
 function closeModal(modal){
   if (modal.id === 'playerModal') { stopSpeech(); playing=false; sessionEndsAt=0; $('#togglePlay').textContent='▶'; }
+  if (modal.id === 'cachePlayerModal') stopCachedPlayer();
   modal.classList.remove('show');
 }
 $$('.close').forEach(b=>b.onclick=()=>closeModal(b.closest('.modal')));
+function setPlaybackSpeed(speed){ playbackSpeed=Number(speed); localStorage.setItem('doo-note-speed',String(playbackSpeed)); if(ttsAudio)ttsAudio.playbackRate=playbackSpeed; $$('.speed-choice').forEach(button=>button.classList.toggle('active',Number(button.dataset.speed)===playbackSpeed)); }
+$$('.speed-choice').forEach(button=>button.onclick=()=>setPlaybackSpeed(button.dataset.speed));
+setPlaybackSpeed(playbackSpeed);
 $('#openScope').onclick=()=>{renderScope();show('#scopeModal')}; $('#saveScope').onclick=()=>{ $$('#scopeOptions input').forEach(x=>docs.find(d=>d.id===x.dataset.id).enabled=x.checked); save(); refreshLessons(); renderDocs();hide('#scopeModal'); };
 function updatePlayer(){ const l=activeLesson(); if(!l)return; const position=playQueue.length ? queueIndex+1 : current+1; const total=playQueue.length || lessons.length; $('#playerTitle').textContent=l.title;$('#playerMeaning').textContent=l.meaning;$('#playerSentence').textContent=l.sentence;$('.now-playing span').textContent=String(position).padStart(2,'0'); $('#progressFill').style.width=`${(position/total)*100}%`; const info=$('#sessionInfo'); if(info) info.textContent=sessionEndsAt ? `새로운 조합으로 30분 듣는 중 · ${Math.max(0, Math.ceil((sessionEndsAt-Date.now())/60000))}분 남음` : '표현을 눌러 미리 듣는 중'; }
 function startListening(){ if(!lessons.length)return; playQueue=shuffle(lessons); queueIndex=0; audioPattern=Math.floor(Math.random()*3); sessionEndsAt=Date.now()+SESSION_MINUTES*60*1000; updatePlayer(); show('#playerModal'); speak(); }
@@ -101,7 +109,7 @@ function browserLessonAudio(lesson, done){
   const parts = patterns[audioPattern].map(part => [...part]);
   if (intensiveListening) parts.push([lesson.explanation || '이 표현은 문맥에 맞게 자연스럽게 사용해보세요.','ko-KR']);
   parts.push([lesson.sentence,'en-US']); let index=0;
-  const next=()=>{ if(index===parts.length)return done(); const [text,lang]=parts[index++]; const utterance=new SpeechSynthesisUtterance(text); utterance.lang=lang; utterance.rate=lang==='en-US'?.78:.9; utterance.onend=next; speechSynthesis.speak(utterance); }; next();
+  const next=()=>{ if(index===parts.length)return done(); const [text,lang]=parts[index++]; const utterance=new SpeechSynthesisUtterance(text); utterance.lang=lang; utterance.rate=(lang==='en-US'?.78:.9)*playbackSpeed; utterance.onend=next; utterance.onerror=next; speechSynthesis.speak(utterance); }; next();
 }
 async function speak(){
   const lesson = activeLesson();
@@ -129,7 +137,11 @@ async function speak(){
       if ($('#voice-cache').classList.contains('active-page')) renderVoiceCache();
     }
     if(run!==playbackId || !playing)return;
-    ttsAudio=new Audio(URL.createObjectURL(audioBlob)); ttsAudio.onended=()=>{URL.revokeObjectURL(ttsAudio.src);ttsAudio=null;moveNext()}; ttsAudio.play();
+    const audio=new Audio(URL.createObjectURL(audioBlob)); ttsAudio=audio; let terminal=false;
+    const finish=()=>{ if(terminal || run!==playbackId)return; terminal=true; URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; moveNext(); };
+    const fallback=()=>{ if(terminal || run!==playbackId)return; terminal=true; URL.revokeObjectURL(audio.src); if(ttsAudio===audio)ttsAudio=null; browserLessonAudio(lesson,()=>{ if(run===playbackId && playing)moveNext(); }); };
+    audio.onended=finish; audio.onerror=fallback; audio.playbackRate=playbackSpeed;
+    audio.play().catch(fallback);
   }catch{
     browserLessonAudio(lesson,moveNext);
   }
@@ -137,6 +149,10 @@ async function speak(){
 function stopSpeech(){playbackId++;cachedPlaybackId++;speechSynthesis.cancel();if(ttsAudio){ttsAudio.pause();URL.revokeObjectURL(ttsAudio.src);ttsAudio=null}}
 function movePlayer(step){ stopSpeech(); if(playQueue.length) queueIndex=(queueIndex+step+playQueue.length)%playQueue.length; else current=(current+step+lessons.length)%lessons.length; updatePlayer(); if(playing)speak(); }
 $('#togglePlay').onclick=()=>{if(playing){stopSpeech();playing=false;$('#togglePlay').textContent='▶'}else speak()}; $('#next').onclick=()=>movePlayer(1);$('#prev').onclick=()=>movePlayer(-1);$('#autoToggle').onclick=e=>{auto=!auto;e.currentTarget.classList.toggle('on',auto)};
+$('#cacheTogglePlay').onclick=()=>{ if(cachePlaying){stopCachedPlayer();$('#cacheTogglePlay').textContent='▶';}else playCachedTrack(); };
+$('#cacheNext').onclick=()=>{ if(!cacheQueue.length)return; stopCachedPlayer(); cacheQueueIndex=(cacheQueueIndex+1)%cacheQueue.length; updateCachePlayer(); playCachedTrack(); };
+$('#cachePrev').onclick=()=>{ if(!cacheQueue.length)return; stopCachedPlayer(); cacheQueueIndex=(cacheQueueIndex-1+cacheQueue.length)%cacheQueue.length; updateCachePlayer(); playCachedTrack(); };
+$('#cacheAutoToggle').onclick=e=>{ cacheAuto=!cacheAuto; e.currentTarget.classList.toggle('on',cacheAuto); };
 $('#intensiveToggle').onclick=e=>{intensiveListening=!intensiveListening;e.currentTarget.classList.toggle('on',intensiveListening);$('#intensiveLabel').textContent=intensiveListening?'강화 듣기 · 설명 포함':'일반 듣기 · 뜻과 예문'};
 $('#clearVoiceCache').onclick=async()=>{ await clearCachedAudio(); renderVoiceCache(); };
 let qIndex=0, liveConnection, liveStream, liveAudio, questions=[];
