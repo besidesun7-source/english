@@ -79,9 +79,9 @@ function refreshLessons(){ if(playing){ stopSpeech(); playing=false; $('#toggleP
 function renderSources(){ $('#sourceChips').innerHTML = docs.filter(d=>d.enabled).map(d=>`<span class="source-chip"><i style="background:${d.color}"></i>${d.name}<button onclick="toggleDoc('${d.id}')">×</button></span>`).join('') || '<span class="muted">문서를 선택해주세요</span>'; $('#lessonCount').textContent = lessons.length; }
 function escapeHtml(value){ return String(value || '').replace(/[&<>'"]/g,char=>({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[char])); }
 function termMarkup(term,meaning){ return `<span class="term-link" role="button" tabindex="0" data-meaning="${encodeURIComponent(meaning)}" onclick="event.stopPropagation();toggleTerm(this)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();toggleTerm(this)}">${escapeHtml(term)}<span class="term-meaning"></span></span>`; }
-function annotatedSentence(lesson){ const sentence=escapeHtml(lesson.sentence), terms=lesson.title.split('/').map(term=>term.trim()).filter(term=>term.length>2).sort((a,b)=>b.length-a.length); for(const term of terms){ const escaped=escapeHtml(term), index=sentence.toLowerCase().indexOf(escaped.toLowerCase()); if(index>=0)return `${sentence.slice(0,index)}${termMarkup(sentence.slice(index,index+escaped.length),lesson.meaning)}${sentence.slice(index+escaped.length)}`; } return sentence; }
+function annotatedSentence(lesson){ const sentence=escapeHtml(lesson.sentence), terms=(lesson.keyTerms || lesson.title.split('/').map(term=>term.trim()).filter(term=>term.split(/\s+/).length<=4)).filter(term=>term.length>2).slice(0,2).sort((a,b)=>b.length-a.length); for(const term of terms){ const escaped=escapeHtml(term), index=sentence.toLowerCase().indexOf(escaped.toLowerCase()); if(index>=0)return `${sentence.slice(0,index)}${termMarkup(sentence.slice(index,index+escaped.length),lesson.meaning)}${sentence.slice(index+escaped.length)}`; } return sentence; }
 window.toggleTerm=element=>{ const shown=element.classList.toggle('show-meaning'); element.querySelector('.term-meaning').textContent=shown?` · ${decodeURIComponent(element.dataset.meaning)}`:''; };
-function renderLessons(){ $('#lessonCards').innerHTML = lessons.length ? lessons.map((l,i)=>`<button class="lesson-card" onclick="openPlayer(${i})"><span class="lesson-num">${l.n}</span><div><span class="tag">${l.tag}</span><b>${termMarkup(l.title,l.meaning)}</b><small class="card-sentence">${annotatedSentence(l)}</small></div><span class="speak">◖</span></button>`).join('') : '<p class="empty-lessons">선택한 문서에서 아직 학습할 표현을 찾지 못했어요.</p>'; }
+function renderLessons(){ $('#lessonCards').innerHTML = lessons.length ? lessons.map((l,i)=>`<button class="lesson-card" onclick="openPlayer(${i})"><span class="lesson-num">${l.n}</span><div><span class="tag">${l.tag}</span><b>${escapeHtml(l.title)}</b><small class="card-sentence">${annotatedSentence(l)}</small></div><span class="speak">◖</span></button>`).join('') : '<p class="empty-lessons">선택한 문서에서 아직 학습할 표현을 찾지 못했어요.</p>'; }
 function renderDocs(){ $('#documentList').innerHTML = docs.map(d=>`<div class="document-row"><span class="doc-icon" style="background:${d.color}">PDF</span><div><button class="document-title" onclick="openDocument('${d.id}')">${d.name}</button><small class="${d.analyzing?'analysis-state':''}">${d.analyzing?'✦ GPT 분석 중…':`${d.date} · 핵심 표현 ${d.count}개`}</small></div>${d.analyzing?`<button class="cancel-analysis" onclick="cancelAnalysis('${d.id}')">취소·삭제</button>`:`<button class="toggle ${d.enabled?'on':''}" onclick="toggleDoc('${d.id}')"><i></i></button><button class="reanalyze-doc" onclick="reanalyzeDoc('${d.id}')">재분석</button>`}<button class="delete-doc" onclick="deleteDoc('${d.id}')">삭제</button></div>`).join(''); }
 function renderScope(){ $('#scopeOptions').innerHTML=docs.map(d=>`<label class="scope-option"><input type="checkbox" data-id="${d.id}" ${d.enabled?'checked':''}/><span class="check"></span><span><b>${d.name}</b><small>핵심 표현 ${d.count}개</small></span></label>`).join(''); }
 window.toggleDoc=id=>{ const d=docs.find(x=>x.id===id); d.enabled=!d.enabled; save(); refreshLessons(); renderDocs();renderScope(); };
@@ -239,7 +239,7 @@ function documentLessons(text, documentId) {
     const translation = korean.join(' ').replace(/\s+/g,' ').trim();
     if (sentence && translation) {
       const title = sentence.replace(/[.!?].*/, '').split(' ').slice(0,7).join(' ');
-      add({ n:'', title, meaning:translation, sentence, translation, explanation:'문서의 영어 원문과 해석을 함께 듣고, 핵심 표현을 문맥 속에서 익혀보세요.', tag:'지문 이해' });
+      add({ n:'', title, meaning:translation, sentence, translation, explanation:'문서의 영어 원문과 해석을 함께 듣고, 핵심 표현을 문맥 속에서 익혀보세요.', tag:'지문 이해', keyTerms:[] });
     }
   }
 
@@ -249,7 +249,7 @@ function documentLessons(text, documentId) {
     if (pair.length < 2 || isHeader(line)) return;
     const [english, korean] = pair;
     if (!/[A-Za-z]/.test(english) || !/[가-힣]/.test(korean) || english.length > 80) return;
-    add({ n:'', title:english, meaning:korean, sentence:english, translation:korean, explanation:'PDF의 핵심 표현 표에 나온 뜻입니다. 먼저 뜻을 듣고, 영어 표현을 따라 말해보세요.', tag:'핵심 표현' });
+    add({ n:'', title:english, meaning:korean, sentence:english, translation:korean, explanation:'PDF의 핵심 표현 표에 나온 뜻입니다. 먼저 뜻을 듣고, 영어 표현을 따라 말해보세요.', tag:'핵심 표현', keyTerms:english.split(/\s+/).length<=4?[english]:[] });
   });
   return results.slice(0,160).map((lesson, index) => ({ ...lesson, n:String(index+1).padStart(2,'0') }));
 }
@@ -266,7 +266,7 @@ function setAiLessons(cards, documentId) {
     .slice(0,160).map((card,index) => ({
       n:String(index+1).padStart(2,'0'), title:card.title.trim(), meaning:card.meaning.trim(),
       sentence:card.sentence.trim(), translation:card.translation.trim(),
-      explanation:(card.explanation || '문서의 문맥과 함께 익혀보세요.').trim(), tag:(card.tag || 'AI 학습').trim(), documentId
+      explanation:(card.explanation || '문서의 문맥과 함께 익혀보세요.').trim(), tag:(card.tag || 'AI 학습').trim(), keyTerms:Array.isArray(card.keyTerms)?card.keyTerms.slice(0,2):[], documentId
     }));
   if (!clean.length) throw new Error('AI가 학습 항목을 만들지 못했습니다.');
   lessonBank = lessonBank.filter(lesson => lesson.documentId !== documentId).concat(clean);
