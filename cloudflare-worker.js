@@ -27,6 +27,10 @@ async function saveLibrary(request, env) {
   return json({ saved:true });
 }
 
+const libraryFileKey = (id, fileId) => `encrypted-library-file:${id}:${fileId}`;
+async function getLibraryFile(request,env){ const id=libraryId(request), fileId=new URL(request.url).searchParams.get('fileId') || ''; if(!validLibraryId(id) || !/^[\w.-]{1,120}$/.test(fileId))return json({error:'유효하지 않은 문서입니다.'},400); const payload=await env.DOO_NOTE_LIBRARY.get(libraryFileKey(id,fileId)); return json({payload:payload || null}); }
+async function saveLibraryFile(request,env){ const id=libraryId(request), {fileId,payload}=await request.json(); if(!validLibraryId(id) || !/^[\w.-]{1,120}$/.test(fileId) || typeof payload!=='string' || payload.length>24000000)return json({error:'저장할 수 없는 문서입니다.'},400); await env.DOO_NOTE_LIBRARY.put(libraryFileKey(id,fileId),payload); return json({saved:true}); }
+
 async function analyze(request, env) {
   if (!env.OPENAI_API_KEY) return json({ error: 'OPENAI_API_KEY가 설정되지 않았습니다.' }, 503);
   try {
@@ -98,6 +102,8 @@ export default {
     const { pathname } = new URL(request.url);
     if (pathname === '/api/library' && request.method === 'GET') return getLibrary(request, env);
     if (pathname === '/api/library' && request.method === 'POST') return saveLibrary(request, env);
+    if (pathname === '/api/library/file' && request.method === 'GET') return getLibraryFile(request, env);
+    if (pathname === '/api/library/file' && request.method === 'POST') return saveLibraryFile(request, env);
     if (pathname === '/api/analyze/start' && request.method === 'POST') return startAnalysisJob(request, env, ctx);
     if (pathname === '/api/analyze/status' && request.method === 'GET') return getAnalysisJob(request, env);
     if (pathname === '/api/analyze/cancel' && request.method === 'POST') return cancelAnalysisJob(request, env);
